@@ -24,6 +24,7 @@ TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
 SAUDI_TIMEZONE = pytz.timezone('Asia/Riyadh')
 TRADING_HOURS = {'start': (9, 30), 'end': (15, 0)}
+STOCK_SYMBOLS = ['1211', '2222', '3030', '4200']
 NEWS_URL = "https://www.argaam.com/ar"
 
 # إصلاح مشكلة PostgreSQL
@@ -112,6 +113,12 @@ def update_stock_data(symbol):
             session = Session()
             stock = session.query(StockData).filter_by(symbol=symbol).first() or StockData(symbol=symbol)
             stock.data = data.to_json()
+            stock.historical_highs = {
+                'daily': data['High'].max(),
+                'weekly': data['High'].resample('W').max().to_dict(),
+                'monthly': data['High'].resample('M').max().to_dict(),
+                'yearly': data['High'].resample('Y').max().to_dict()
+            }
             stock.last_updated = get_saudi_time()
             session.add(stock)
             session.commit()
@@ -131,6 +138,66 @@ def calculate_rsi(data, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
+# ------------------ Report Generation ------------------
+def generate_top5_report(period='daily'):
+    session = Session()
+    results = []
+    try:
+        for symbol in STOCK_SYMBOLS:
+            stock = session.query(StockData).filter_by(symbol=symbol).first()
+            if not stock:
+                continue
+                
+            data = pd.read_json(stock.data)
+            if period == 'hourly':
+                change = data['Close'].pct_change(periods=1).iloc[-1] * 100
+            elif period == 'daily':
+                change = data['Close'].pct_change(periods=1).iloc[-1] * 100
+            elif period == 'weekly':
+                change = data['Close'].pct_change(periods=5).iloc[-1] * 100
+            
+            results.append({'symbol': symbol, 'change': change})
+        
+        top5 = sorted(results, key=lambda x: x['change'], reverse=True)[:5]
+        bottom5 = sorted(results, key=lambda x: x['change'])[:5]
+        return top5, bottom5
+    finally:
+        session.close()
+
+def format_report(top5, bottom5):
+    report = "📈 أعلى 5 شركات:\n"
+    for i, item in enumerate(top5, 1):
+        report += f"{i}. {item['symbol']}: {item['change']:.2f}%\n"
+    
+    report += "\n📉 أدنى 5 شركات:\n"
+    for i, item in enumerate(bottom5, 1):
+        report += f"{i}. {item['symbol']}: {item['change']:.2f}%\n"
+    
+    return arabic_text(report)
+
+# ------------------ Message Handlers ------------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.chat.type == 'private':
+        await update.message.reply_text(arabic_text("مرحبا! أدخل /settings لإدارة الإعدادات"))
+    else:
+        await update.message.reply_text(arabic_text("مرحبا! أنا بوت الراصد السعودي 🏅"))
+
+async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text(arabic_text("⚠️ هذا الأمر متاح للمشرفين فقط"))
+        return
+    
+    keyboard = [
+        [InlineKeyboardButton("التقارير التلقائية", callback_data='reports_settings')],
+        [InlineKeyboardButton("الفرص الذهبية", callback_data='golden_settings')],
+        [InlineKeyboardButton("الإشعارات الفورية", callback_data='alerts_settings')]
+    ]
+    
+    await update.message.reply_text(
+        arabic_text("⚙️ لوحة التحكم الرئيسية:"),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
 # ------------------ Scheduled Tasks ------------------
 async def send_hourly_report():
     session = Session()
@@ -147,14 +214,16 @@ async def send_hourly_report():
 async def check_real_time_alerts():
     session = Session()
     try:
-        symbols = session.query(StockData.symbol).all()
-        for symbol in symbols:
-            stock = session.query(StockData).filter_by(symbol=symbol[0]).first()
+        for symbol in STOCK_SYMBOLS:
+            stock = session.query(StockData).filter_by(symbol=symbol).first()
+            if not stock:
+                continue
+                
             data = pd.read_json(stock.data)
             current_price = data['Close'].iloc[-1]
             
             if current_price >= stock.historical_highs['daily']:
-                alert = arabic_text(f"🚨 {symbol[0]} سجل أعلى سعر يومي جديد!")
+                alert = arabic_text(f"🚨 {symbol} سجل أعلى سعر يومي جديد!")
                 await send_group_alerts(alert)
     finally:
         session.close()
@@ -177,7 +246,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("settings", settings_menu))
     
-    # Scheduler Fix
+    # Scheduler
     scheduler = BackgroundScheduler(timezone=SAUDI_TIMEZONE)
     scheduler.add_job(lambda: asyncio.run(send_hourly_report()), CronTrigger(minute=0))
     scheduler.add_job(lambda: asyncio.run(check_real_time_alerts()), CronTrigger(minute='*/15'))
