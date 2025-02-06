@@ -17,14 +17,13 @@ from bs4 import BeautifulSoup
 import arabic_reshaper
 from bidi.algorithm import get_display
 import psycopg2
-from technical_analysis import calculate_all_indicators  # ملف مخصص للتحليل الفني
 
 # ------------------ Configuration ------------------
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
 SAUDI_TIMEZONE = pytz.timezone('Asia/Riyadh')
 TRADING_HOURS = {'start': (9, 30), 'end': (15, 0)}
-STOCK_SYMBOLS = ['1211', '2222', '3030', '4200']  # قائمة رموز الأسهم
+NEWS_URL = "https://www.argaam.com/ar"  # مصدر أخبار افتراضي
 
 # إصلاح مشكلة PostgreSQL
 DATABASE_URL = os.environ.get('DATABASE_URL').replace("postgres://", "postgresql://", 1)
@@ -49,22 +48,18 @@ class GroupSettings(Base):
         'announcements': True,
         'delete_messages': True,
         'strategies': {
-            'strategy_1': True,
-            'strategy_2': False,
-            'strategy_3': True
+            'الاستراتيجية الذهبية': True,
+            'اختراق القمة': False,
+            'المتوسطات المتحركة': True
         }
-    })
-    report_times = Column(JSON, default={
-        'hourly': True,
-        'daily': True,
-        'weekly': True
     })
 
 class StockData(Base):
     __tablename__ = 'stock_data'
     symbol = Column(String(4), primary_key=True)
     data = Column(JSON)
-    historical_data = Column(JSON)
+    historical_highs = Column(JSON)
+    historical_lows = Column(JSON)
     last_updated = Column(DateTime)
 
 class Opportunity(Base):
@@ -77,17 +72,17 @@ class Opportunity(Base):
     current_target = Column(Integer, default=0)
     status = Column(String, default='active')
     created_at = Column(DateTime)
-    updated_at = Column(DateTime)
+    profit = Column(Float, default=0.0)
 
 class PerformanceReport(Base):
     __tablename__ = 'performance_reports'
     id = Column(Integer, primary_key=True)
     week_number = Column(Integer)
     total_opportunities = Column(Integer)
-    successful = Column(Integer)
+    company_profits = Column(JSON)  # {symbol: profit}
+    total_profit = Column(Float)
     ongoing = Column(Integer)
     closed = Column(Integer)
-    profit_loss = Column(Float)
 
 Base.metadata.create_all(engine)
 
@@ -105,13 +100,25 @@ async def delete_message(context, chat_id, message_id):
 def get_saudi_time():
     return datetime.now(SAUDI_TIMEZONE)
 
-# ------------------ Enhanced Stock Management ------------------
+def is_admin(update: Update):
+    return update.effective_user.id in [admin.user.id for admin in update.effective_chat.get_administrators()]
+
+# ------------------ Data Management ------------------
 def update_stock_data(symbol):
     try:
         data = yf.download(f"{symbol}.SR", period="1y", interval="1d")
         if not data.empty:
             session = Session()
             stock = session.query(StockData).filter_by(symbol=symbol).first() or StockData(symbol=symbol)
+            
+            # تحديث السجلات التاريخية
+            stock.historical_highs = {
+                'daily': data['High'].max(),
+                'weekly': data['High'].resample('W').max().to_dict(),
+                'monthly': data['High'].resample('M').max().to_dict(),
+                'yearly': data['High'].resample('Y').max().to_dict()
+            }
+            
             stock.data = data.to_json()
             stock.last_updated = get_saudi_time()
             session.add(stock)
@@ -120,71 +127,105 @@ def update_stock_data(symbol):
     except Exception as e:
         logging.error(f"Error updating {symbol}: {e}")
 
-# ------------------ Advanced Technical Analysis ------------------
-def detect_strategies(symbol):
-    session = Session()
-    stock = session.query(StockData).filter_by(symbol=symbol).first()
-    data = pd.read_json(stock.data)
+# ------------------ Technical Analysis ------------------
+def calculate_rsi(data, period=14):
+    delta = data['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).fillna(0)
+    loss = (-delta.where(delta < 0, 0)).fillna(0)
     
-    indicators = calculate_all_indicators(data)
-    opportunities = []
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
     
-    # Strategy 1: RSI Overbought
-    if indicators['rsi'][-1] > 70:
-        opportunities.append(create_opportunity(symbol, data, 'rsi'))
-    
-    # Strategy 2: Fibonacci Breakout
-    if data['Close'][-1] > indicators['fib_levels'][0.618]:
-        opportunities.append(create_opportunity(symbol, data, 'fibonacci'))
-    
-    # Strategy 3: Moving Average Crossover
-    if indicators['ma50'][-1] > indicators['ma200'][-1]:
-        opportunities.append(create_opportunity(symbol, data, 'ma_crossover'))
-    
-    session.close()
-    return opportunities
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
 
-def create_opportunity(symbol, data, strategy_type):
-    entry_price = data['Close'][-1]
-    if strategy_type == 'rsi':
-        targets = [entry_price * (1 - level) for level in [0.05, 0.1, 0.15, 0.2]]
-        stop_loss = data['High'][-2]
-    elif strategy_type == 'fibonacci':
-        targets = [entry_price * (1 + level) for level in [0.236, 0.382, 0.5, 0.618]]
-        stop_loss = data['Low'][-2]
-    else:
-        targets = [entry_price * (1 + level) for level in [0.1, 0.2, 0.3, 0.4]]
-        stop_loss = data['Low'][-2]
+def detect_golden_opportunity(symbol):
+    session = Session()
+    try:
+        stock = session.query(StockData).filter_by(symbol=symbol).first()
+        if not stock:
+            return None
+        
+        data = pd.read_json(stock.data)
+        if len(data) < 14:
+            return None
+        
+        rsi = calculate_rsi(data)
+        if rsi[-1] > 70:
+            entry_price = data['Close'].iloc[-1]
+            prev_high = data['High'].iloc[-2]
+            
+            return Opportunity(
+                symbol=symbol,
+                entry_price=entry_price,
+                targets=[entry_price * (1 - level) for level in [0.05, 0.1, 0.15, 0.2]],
+                stop_loss=prev_high,
+                created_at=get_saudi_time()
+            )
+    except Exception as e:
+        logging.error(f"Error detecting opportunity: {e}")
+    finally:
+        session.close()
+
+# ------------------ News & Alerts ------------------
+def get_market_news():
+    try:
+        response = requests.get(NEWS_URL)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        news_items = soup.find_all('div', class_='news-item')[:5]  # تعديل حسب هيكل الموقع
+        return [arabic_text(item.text.strip()) for item in news_items]
+    except Exception as e:
+        logging.error(f"Error fetching news: {e}")
+        return []
+
+# ------------------ Report Generation ------------------
+def generate_top5_report(period='daily'):
+    session = Session()
+    symbols = session.query(StockData.symbol).all()
+    results = []
     
-    return Opportunity(
-        symbol=symbol,
-        entry_price=entry_price,
-        targets=targets,
-        stop_loss=stop_loss,
-        created_at=get_saudi_time()
-    )
+    for symbol in symbols:
+        stock = session.query(StockData).filter_by(symbol=symbol[0]).first()
+        data = pd.read_json(stock.data)
+        
+        if period == 'hourly':
+            change = data['Close'].pct_change(periods=1).iloc[-1] * 100
+        elif period == 'daily':
+            change = data['Close'].pct_change(periods=1).iloc[-1] * 100
+        elif period == 'weekly':
+            change = data['Close'].pct_change(periods=5).iloc[-1] * 100
+        
+        results.append({
+            'symbol': symbol[0],
+            'change': change
+        })
+    
+    top5 = sorted(results, key=lambda x: x['change'], reverse=True)[:5]
+    bottom5 = sorted(results, key=lambda x: x['change'])[:5]
+    
+    return top5, bottom5
 
 # ------------------ Performance Tracking ------------------
-def generate_performance_report():
+def generate_weekly_performance_report():
     session = Session()
-    week_number = datetime.now().isocalendar()[1]
-    
     report = PerformanceReport(
-        week_number=week_number,
+        week_number=datetime.now().isocalendar()[1],
         total_opportunities=0,
-        successful=0,
+        company_profits={},
+        total_profit=0.0,
         ongoing=0,
-        closed=0,
-        profit_loss=0.0
+        closed=0
     )
     
     opportunities = session.query(Opportunity).all()
     for opp in opportunities:
         report.total_opportunities += 1
         if opp.status == 'closed':
+            profit = (opp.targets[opp.current_target] - opp.entry_price) / opp.entry_price * 100
+            report.company_profits[opp.symbol] = report.company_profits.get(opp.symbol, 0) + profit
+            report.total_profit += profit
             report.closed += 1
-            report.profit_loss += (opp.targets[-1] - opp.entry_price)
-        elif opp.status == 'active':
+        else:
             report.ongoing += 1
     
     session.add(report)
@@ -192,64 +233,64 @@ def generate_performance_report():
     session.close()
 
 # ------------------ Message Handlers ------------------
-async def handle_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.chat.type == 'private':
+        await update.message.reply_text(arabic_text("مرحبا! أدخل /settings لإدارة الإعدادات"))
+    else:
+        await update.message.reply_text(arabic_text("مرحبا! أنا بوت الراصد السعودي 🏅"))
+
+async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text(arabic_text("⚠️ هذا الأمر متاح للمشرفين فقط"))
+        return
+    
     keyboard = [
-        [InlineKeyboardButton("الإستراتيجيات الفنية", callback_data='strategies')],
-        [InlineKeyboardButton("التقارير الأسبوعية", callback_data='reports')],
-        [InlineKeyboardButton("إدارة التنبيهات", callback_data='alerts')]
+        [InlineKeyboardButton("التقارير التلقائية", callback_data='reports_settings')],
+        [InlineKeyboardButton("الفرص الذهبية", callback_data='golden_settings')],
+        [InlineKeyboardButton("الإشعارات الفورية", callback_data='alerts_settings')],
+        [InlineKeyboardButton("الأخبار والتحديثات", callback_data='news_settings')]
     ]
     
     await update.message.reply_text(
-        arabic_text("⚙️ لوحة التحكم المتقدمة:"),
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-async def strategy_settings(update: Update, context: CallbackContext):
-    query = update.callback_query
-    session = Session()
-    group = session.query(GroupSettings).filter_by(chat_id=query.message.chat.id).first()
-    
-    keyboard = []
-    for strategy, status in group.settings['strategies'].items():
-        text = f"{'✅' if status else '❌'} {strategy.replace('_', ' ').title()}"
-        callback_data = f"toggle_strategy:{strategy}"
-        keyboard.append([InlineKeyboardButton(text, callback_data=callback_data)])
-    
-    await query.edit_message_text(
-        arabic_text("الإستراتيجيات الفنية النشطة:"),
+        arabic_text("⚙️ لوحة التحكم الرئيسية:"),
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 # ------------------ Scheduled Tasks ------------------
-async def daily_market_scan(context):
-    session = Session()
-    for symbol in STOCK_SYMBOLS:
-        update_stock_data(symbol)
-        opportunities = detect_strategies(symbol)
-        for opp in opportunities:
-            existing = session.query(Opportunity).filter_by(symbol=symbol, status='active').first()
-            if not existing:
-                session.add(opp)
-    session.commit()
-    session.close()
-
-async def send_weekly_report(context):
-    generate_performance_report()
-    session = Session()
-    report = session.query(PerformanceReport).order_by(PerformanceReport.id.desc()).first()
+async def send_hourly_report(context):
+    top5, bottom5 = generate_top5_report('hourly')
+    message = arabic_text("📊 تقرير أعلى 5 وأدنى 5 شركات (ساعة):\n\n")
+    message += format_report(top5, bottom5)
     
-    message = arabic_text(f"""
-    📊 تقرير أداء الأسبوع #{report.week_number}
-    --------------------------
-    الفرص المفتوحة: {report.ongoing}
-    الفرص المغلقة: {report.closed}
-    الأرباح/الخسائر الإجمالية: {report.profit_loss:.2f}%
-    """)
-    
+    session = Session()
     groups = session.query(GroupSettings).filter_by(settings__reports=True).all()
     for group in groups:
         await context.bot.send_message(group.chat_id, message)
+    session.close()
+
+async def check_real_time_alerts(context):
+    session = Session()
+    symbols = session.query(StockData.symbol).all()
     
+    for symbol in symbols:
+        stock = session.query(StockData).filter_by(symbol=symbol[0]).first()
+        data = pd.read_json(stock.data)
+        current_price = data['Close'].iloc[-1]
+        
+        # تنبيهات المستويات القياسية
+        if current_price >= stock.historical_highs['daily']:
+            alert = arabic_text(f"🚨 {symbol[0]} سجل أعلى سعر يومي جديد!")
+            await send_group_alerts(context, alert)
+            
+        if current_price >= stock.historical_highs['all_time']:
+            alert = arabic_text(f"🔥 {symbol[0]} سجل أعلى سعر تاريخي جديد!")
+            await send_group_alerts(context, alert)
+
+async def send_group_alerts(context, message):
+    session = Session()
+    groups = session.query(GroupSettings).filter_by(settings__market_alerts=True).all()
+    for group in groups:
+        await context.bot.send_message(group.chat_id, message)
     session.close()
 
 # ------------------ Main Application ------------------
@@ -257,23 +298,23 @@ def main():
     application = Application.builder().token(TOKEN).build()
     
     # Handlers
-    application.add_handler(CommandHandler("start", handle_settings))
-    application.add_handler(CommandHandler("settings", handle_settings))
-    application.add_handler(CallbackQueryHandler(strategy_settings, pattern='^strategies'))
-    
-    # Webhook Configuration
-    application.run_webhook(
-    listen="0.0.0.0",
-    port=int(os.environ.get('PORT', 5000)),
-    webhook_url=WEBHOOK_URL,
-    url_path=TOKEN
-)
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("settings", settings_menu))
     
     # Scheduler
     scheduler = BackgroundScheduler(timezone=SAUDI_TIMEZONE)
-    scheduler.add_job(daily_market_scan, CronTrigger(hour=18, minute=0))
-    scheduler.add_job(send_weekly_report, CronTrigger(day_of_week='sun', hour=8))
+    scheduler.add_job(send_hourly_report, CronTrigger(minute=0))
+    scheduler.add_job(check_real_time_alerts, CronTrigger(minute='*/15'))
+    scheduler.add_job(generate_weekly_performance_report, CronTrigger(day_of_week='sun', hour=8))
     scheduler.start()
+    
+    # Webhook Setup
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get('PORT', 5000)),
+        webhook_url=WEBHOOK_URL,
+        url_path=TOKEN
+    )
 
 if __name__ == "__main__":
     main()
