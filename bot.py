@@ -21,7 +21,7 @@ import psycopg2
 
 # ------------------ Configuration ------------------
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-WEBHOOK_URL = os.environ.get('WEBHOOK_URL') + "/" + TOKEN  # إصلاح مسار الويب هوك
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL') + "/" + TOKEN
 SAUDI_TIMEZONE = pytz.timezone('Asia/Riyadh')
 TRADING_HOURS = {'start': (9, 30), 'end': (15, 0)}
 STOCK_SYMBOLS = ['1211', '2222', '3030', '4200']
@@ -86,6 +86,8 @@ class PerformanceReport(Base):
     ongoing = Column(Integer)
     closed = Column(Integer)
 
+# إعادة إنشاء الجداول مع التحديثات
+Base.metadata.drop_all(engine)
 Base.metadata.create_all(engine)
 
 # ------------------ Utility Functions ------------------
@@ -102,8 +104,12 @@ async def delete_message(chat_id, message_id):
 def get_saudi_time():
     return datetime.now(SAUDI_TIMEZONE)
 
-def is_admin(update: Update):
-    return update.effective_user.id in [admin.user.id for admin in update.effective_chat.get_administrators()]
+async def is_admin(update: Update):
+    chat = update.effective_chat
+    if chat.type == 'private':
+        return True
+    admins = await chat.get_administrators()
+    return update.effective_user.id in [admin.user.id for admin in admins]
 
 # ------------------ Data Management ------------------
 def update_stock_data(symbol):
@@ -183,7 +189,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(arabic_text("مرحبا! أنا بوت الراصد السعودي 🏅"))
 
 async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update):
+    if not await is_admin(update):
         await update.message.reply_text(arabic_text("⚠️ هذا الأمر متاح للمشرفين فقط"))
         return
     
@@ -197,6 +203,31 @@ async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         arabic_text("⚙️ لوحة التحكم الرئيسية:"),
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+
+async def handle_stock_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    symbol = update.message.text
+    if not re.match(r'^\d{4}$', symbol):
+        return
+    
+    session = Session()
+    try:
+        stock = session.query(StockData).filter_by(symbol=symbol).first()
+        if stock:
+            data = pd.read_json(stock.data)
+            analysis = arabic_text(f"""
+            📊 تحليل سهم {symbol}
+            -----------------
+            السعر الحالي: {data['Close'].iloc[-1]:.2f}
+            أعلى سعر يومي: {stock.historical_highs['daily']:.2f}
+            RSI (14 يوم): {calculate_rsi(data).iloc[-1]:.2f}
+            """)
+            await update.message.reply_text(analysis)
+        else:
+            await update.message.reply_text(arabic_text("⚠️ رمز السهم غير موجود"))
+    except Exception as e:
+        logging.error(f"Analysis error: {e}")
+    finally:
+        session.close()
 
 # ------------------ Scheduled Tasks ------------------
 async def send_hourly_report():
@@ -245,6 +276,7 @@ def main():
     # Handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("settings", settings_menu))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_stock_symbol))
     
     # Scheduler
     scheduler = BackgroundScheduler(timezone=SAUDI_TIMEZONE)
@@ -252,14 +284,13 @@ def main():
     scheduler.add_job(lambda: asyncio.run(check_real_time_alerts()), CronTrigger(minute='*/15'))
     scheduler.start()
     
-    # إصلاح مسار الويب هوك
-    PORT = int(os.environ.get('PORT', 5000))
+    # Webhook Setup
     application.run_webhook(
         listen="0.0.0.0",
-        port=PORT,
+        port=int(os.environ.get('PORT', 5000)),
         webhook_url=WEBHOOK_URL,
         url_path=TOKEN,
-        secret_token='WEBHOOK_SECRET'  # إضافة سرية الويب هوك
+        secret_token='WEBHOOK_SECRET'
     )
 
 if __name__ == "__main__":
