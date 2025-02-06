@@ -21,7 +21,7 @@ import psycopg2
 
 # ------------------ Configuration ------------------
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL') + "/" + TOKEN  # إصلاح مسار الويب هوك
 SAUDI_TIMEZONE = pytz.timezone('Asia/Riyadh')
 TRADING_HOURS = {'start': (9, 30), 'end': (15, 0)}
 STOCK_SYMBOLS = ['1211', '2222', '3030', '4200']
@@ -252,12 +252,14 @@ def main():
     scheduler.add_job(lambda: asyncio.run(check_real_time_alerts()), CronTrigger(minute='*/15'))
     scheduler.start()
     
-    # Webhook Setup
+    # إصلاح مسار الويب هوك
+    PORT = int(os.environ.get('PORT', 5000))
     application.run_webhook(
         listen="0.0.0.0",
-        port=int(os.environ.get('PORT', 5000)),
+        port=PORT,
         webhook_url=WEBHOOK_URL,
-        url_path=TOKEN
+        url_path=TOKEN,
+        secret_token='WEBHOOK_SECRET'  # إضافة سرية الويب هوك
     )
 
 if __name__ == "__main__":
