@@ -8,6 +8,7 @@ import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
 import emoji
+from numpy import nan as npNaN
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
