@@ -1,297 +1,335 @@
 import os
-import re
+import asyncio
 import logging
-import pandas as pd
-import numpy as np
-import yfinance as yf
-from telegram import *
-from telegram.ext import *
 from datetime import datetime, timedelta
-import pytz
-from sqlalchemy import create_engine, Column, Integer, String, JSON, DateTime, Boolean, Float, Text, text
-from sqlalchemy.orm import declarative_base, sessionmaker
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
-import requests
-from bs4 import BeautifulSoup
-import arabic_reshaper
-from bidi.algorithm import get_display
-import psycopg2
-from tradingview_ta import TA_Handler, Interval  # مكتبة التحليل الفني
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+import yfinance as yf
+import pandas as pd
+import ta
+import emoji
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Float
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from aiohttp import ClientSession
+import re
+import json
 
-# ------------------ Configuration ------------------
-TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
-SAUDI_TIMEZONE = pytz.timezone('Asia/Riyadh')
-TRADING_HOURS = {'start': (9, 30), 'end': (15, 0)}
+# تهيئة السجلات
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-# إعدادات قاعدة البيانات
-DATABASE_URL = os.environ.get('DATABASE_URL').replace("postgres://", "postgresql://", 1)
-engine = create_engine(DATABASE_URL, pool_size=20, max_overflow=0)
+TOKEN = os.environ.get('TELEGRAM_TOKEN')
+DATABASE_URL = os.environ.get('DATABASE_URL')
+
+engine = create_engine(DATABASE_URL)
 Base = declarative_base()
 Session = sessionmaker(bind=engine)
 
-# ------------------ Database Models ------------------
+# جداول قاعدة البيانات
+class Stock(Base):
+    __tablename__ = 'stocks'
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String, unique=True)
+    last_price = Column(Float)
+    last_checked = Column(DateTime)
+
+class Opportunity(Base):
+    __tablename__ = 'opportunities'
+    id = Column(Integer, primary_key=True)
+    stock_symbol = Column(String)
+    strategy_name = Column(String)
+    targets = Column(String)
+    stop_loss = Column(Float)
+    status = Column(String, default='active')
+    message_id = Column(Integer)
+
 class GroupSettings(Base):
     __tablename__ = 'group_settings'
     id = Column(Integer, primary_key=True)
-    chat_id = Column(String)
-    settings = Column(JSON, default={
-        'reports': True,
-        'golden_opportunities': True,
-        'market_alerts': True,
-        'group_locked': False,
-        'azkar_enabled': True,
-        'technical_analysis': True,
-        'announcements': True,
-        'delete_messages': True,
-        'analysis_limit': 5  # عدد الاستعلامات اليومية
-    })
-    report_times = Column(JSON, default={'hourly': True, 'daily': True, 'weekly': True})
+    group_id = Column(String, unique=True)
+    allow_discussion = Column(Boolean, default=True)
+    delete_phone_numbers_and_links = Column(Boolean, default=True)
+    enable_hourly_report = Column(Boolean, default=False)
+    enable_daily_report = Column(Boolean, default=True)
+    enable_weekly_report = Column(Boolean, default=True)
+    strategies = Column(String, default='{"golden_opportunity": true, "fibonacci_breakout": false}')
 
-class StockData(Base):
-    __tablename__ = 'stock_data'
-    symbol = Column(String(4), primary_key=True)
-    data = Column(JSON)
-    historical_data = Column(JSON)
-    last_updated = Column(DateTime)
-    sector = Column(String)
-
-class GoldenOpportunity(Base):
-    __tablename__ = 'golden_opportunities'
+class Strategy(Base):
+    __tablename__ = 'strategies'
     id = Column(Integer, primary_key=True)
-    symbol = Column(String(4))
-    entry_price = Column(Float)
-    targets = Column(JSON)
-    stop_loss = Column(Float)
-    current_target = Column(Integer, default=0)
-    message_id = Column(Integer)
-    status = Column(String, default='active')
-    original_message = Column(Text)  # نص الرسالة الأصلية
-    strategy_name = Column(String)    # اسم الاستراتيجية
-
-class TechnicalPattern(Base):
-    __tablename__ = 'technical_patterns'
-    id = Column(Integer, primary_key=True)
-    symbol = Column(String(4))
-    pattern_type = Column(String)
-    targets = Column(JSON)
-    stop_loss = Column(Float)
-    detected_at = Column(DateTime)
-
-class UserActivity(Base):
-    __tablename__ = 'user_activity'
-    user_id = Column(Integer, primary_key=True)
-    last_analysis = Column(DateTime)
-    analysis_count = Column(Integer, default=0)
+    name = Column(String, unique=True)
+    indicator = Column(String)
+    threshold = Column(Float)
+    enabled = Column(Boolean, default=True)
 
 Base.metadata.create_all(engine)
 
-# ------------------ Utility Functions ------------------
-def arabic_text(text):
-    reshaped = arabic_reshaper.reshape(text)
-    return get_display(reshaped)
+async def fetch_stock_data(symbol, session):
+    async with session.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}.SR") as response:
+        if response.status == 200:
+            data = await response.json()
+            df = pd.DataFrame(data['chart']['result'][0]['indicators']['quote'][0])
+            df['timestamp'] = pd.to_datetime(data['chart']['result'][0]['timestamp'], unit='s')
+            return df.set_index('timestamp')
+    return None
 
-async def delete_message(context, chat_id, message_id):
-    try:
-        await context.bot.delete_message(chat_id, message_id)
-    except Exception as e:
-        logging.error(f"Error deleting message: {e}")
-
-def get_saudi_time():
-    return datetime.now(SAUDI_TIMEZONE)
-
-def is_trading_time():
-    now = get_saudi_time()
-    start = now.replace(hour=TRADING_HOURS['start'][0], minute=TRADING_HOURS['start'][1], second=0)
-    end = now.replace(hour=TRADING_HOURS['end'][0], minute=TRADING_HOURS['end'][1], second=0)
-    return start <= now <= end
-
-# ------------------ Enhanced Stock Data Management ------------------
-def update_all_stocks():
-    symbols = get_all_saudi_stocks()
-    for symbol in symbols:
-        update_stock_data(symbol)
-        check_fibonacci_levels(symbol)
-        check_historical_extremes(symbol)
-
-def get_all_saudi_stocks():
-    # جلب جميع الأسهم السعودية من موقع تداول
-    url = "https://www.tadawul.com.sa"
-    response = requests.get(url)
-    soup = BeautifulSoup(response.content, 'html.parser')
-    symbols = [tag.text.strip() for tag in soup.select('.ticker-item')]
-    return symbols[:100]  # تحديث أول 100 سهم لأغراض الاختبار
-
-def update_stock_data(symbol):
-    try:
-        data = yf.download(f"{symbol}.SR", period="1y", interval="1d")
-        if not data.empty:
-            session = Session()
-            stock = session.query(StockData).filter_by(symbol=symbol).first() or StockData(symbol=symbol)
-            
-            # حساب المؤشرات الفنية
-            data['RSI'] = calculate_rsi(data)
-            data['SMA_50'] = data['Close'].rolling(50).mean()
-            data['SMA_200'] = data['Close'].rolling(200).mean()
-            
-            stock.data = data.to_json()
-            stock.last_updated = get_saudi_time()
-            session.add(stock)
-            session.commit()
-            session.close()
-    except Exception as e:
-        logging.error(f"Error updating {symbol}: {e}")
-
-# ------------------ Advanced Technical Analysis ------------------
 def calculate_rsi(data, period=14):
-    delta = data['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).fillna(0)
-    loss = (-delta.where(delta < 0, 0)).fillna(0)
-    
-    avg_gain = gain.rolling(window=period).mean()
-    avg_loss = loss.rolling(window=period).mean()
-    
-    rs = avg_gain / avg_loss
+    delta = data['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-def detect_breakouts(symbol):
-    session = Session()
-    stock = session.query(StockData).filter_by(symbol=symbol).first()
-    data = pd.read_json(stock.data)
+def calculate_fibonacci_levels(data):
+    high = data['high'].max()
+    low = data['low'].min()
+    fib_levels = [0.618, 0.786, 1.0, 1.272, 1.618]
+    return [low + (high - low) * level for level in fib_levels]
+
+async def fetch_saudi_stocks(session):
+    saudi_stocks = yf.Tickers("^TASI")  # الفهرس العام للأسهم السعودية
+    tickers = saudi_stocks.tickers
+    symbols = [t for t in tickers if t.endswith('.SR')]
     
-    alerts = []
-    current_price = data['Close'].iloc[-1]
-    
-    # الكشف عن اختراقات المستويات
-    timeframes = {
-        'ساعة': Interval.INTERVAL_1_HOUR,
-        'يومي': Interval.INTERVAL_1_DAY,
-        'أسبوعي': Interval.INTERVAL_1_WEEK,
-        'شهري': Interval.INTERVAL_1_MONTH
-    }
-    
-    for tf_name, tf in timeframes.items():
-        handler = TA_Handler(symbol=f"{symbol}.SR", screener="saudi", exchange="SAUDI", interval=tf)
-        analysis = handler.get_analysis()
+    session_db = Session()
+    try:
+        for symbol in symbols:
+            stock = session_db.query(Stock).filter_by(symbol=symbol).first()
+            if not stock:
+                session_db.add(Stock(symbol=symbol))
+        session_db.commit()
+    finally:
+        session_db.close()
+    return symbols
+
+async def update_stock_data():
+    session_db = Session()
+    async with ClientSession() as session_client:
+        symbols = await fetch_saudi_stocks(session_client)
+        for symbol in symbols:
+            data = await fetch_stock_data(symbol, session_client)
+            if data is not None:
+                stock = session_db.query(Stock).filter_by(symbol=symbol).first()
+                if stock:
+                    stock.last_price = data['close'].iloc[-1]
+                    stock.last_checked = datetime.utcnow()
+                else:
+                    session_db.add(Stock(symbol=symbol, last_price=data['close'].iloc[-1], last_checked=datetime.utcnow()))
+        session_db.commit()
+    session_db.close()
+
+async def send_report(context, period):
+    session_db = Session()
+    try:
+        stocks = session_db.query(Stock).all()
+        async with ClientSession() as session_client:
+            stock_data = {s.symbol: await fetch_stock_data(s.symbol, session_client) for s in stocks if await fetch_stock_data(s.symbol, session_client) is not None}
+        sorted_stocks = sorted(stock_data.items(), key=lambda x: x[1]['close'].iloc[-1], reverse=True)
         
-        if analysis.summary['RECOMMENDATION'] == 'STRONG_BUY':
-            alerts.append(f"📈 إختراق {tf_name} - إشارة شراء قوية")
-            
-    return alerts
+        top_5 = [s[0] for s in sorted_stocks[:5]]
+        bottom_5 = [s[0] for s in sorted_stocks[-5:]]
+        report_text = f"🇸🇦 **تقرير {period}**:\n" + \
+                      f"📈 **أعلى 5 شركات:**\n" + "\n".join([f"- {s}" for s in top_5]) + "\n" + \
+                      f"📉 **أقل 5 شركات:**\n" + "\n".join([f"- {s}" for s in bottom_5])
+        await context.bot.send_message(context.job.chat_id, report_text, parse_mode='Markdown')
+    finally:
+        session_db.close()
 
-# ------------------ Trading Strategies ------------------
-def create_opportunity(symbol, entry, targets, stop_loss, strategy_name):
-    session = Session()
-    opportunity = GoldenOpportunity(
-        symbol=symbol,
-        entry_price=entry,
-        targets=targets,
-        stop_loss=stop_loss,
-        strategy_name=strategy_name
-    )
-    session.add(opportunity)
-    session.commit()
-    session.close()
+async def check_strategies(context):
+    session_db = Session()
+    strategies = json.loads(session_db.query(GroupSettings.strategies).filter_by(group_id=str(context.job.chat_id)).first().strategies)
+    try:
+        async with ClientSession() as session_client:
+            for stock in session_db.query(Stock).all():
+                data = await fetch_stock_data(stock.symbol, session_client)
+                if data is not None:
+                    if strategies.get('golden_opportunity', False):
+                        rsi = calculate_rsi(data)
+                        if rsi.iloc[-1] > 70:
+                            await send_opportunity(stock.symbol, "فرصة ذهبية", data, context, rsi, "rsi")
+                    if strategies.get('fibonacci_breakout', False):
+                        fib_levels = calculate_fibonacci_levels(data)
+                        if data['close'].iloc[-1] > fib_levels[0]:  # اختراق مستوى 61.8%
+                            await send_opportunity(stock.symbol, "التوقعات السرية", data, context, fib_levels, "fibonacci")
+                    # إضافة مزيد من الاستراتيجيات هنا
+    finally:
+        session_db.close()
 
-def check_targets():
-    session = Session()
-    opportunities = session.query(GoldenOpportunity).filter_by(status='active').all()
+async def send_opportunity(symbol, strategy_name, data, context, indicator, strategy_type):
+    current_price = data['close'].iloc[-1]
+    if strategy_type == "rsi":
+        targets = [current_price * (1 + i * 0.05) for i in range(1, 6)]
+    elif strategy_type == "fibonacci":
+        targets = indicator[1:]  # تجاهل مستوى 61.8% حيث تم اختراقه بالفعل
+    else:
+        targets = []
     
-    for opp in opportunities:
-        data = pd.read_json(session.query(StockData).filter_by(symbol=opp.symbol).first().data)
-        current_price = data['Close'].iloc[-1]
+    stop_loss = data['low'].min()
+    
+    message = await context.bot.send_message(context.job.chat_id, 
+        f"{emoji.emojize(':star:')} **{strategy_name}** للسهم {symbol}:\n" +
+        f"أهداف:\n" + "\n".join([f"{i+1}- {t:.2f}" for i, t in enumerate(targets)]) +
+        f"\nوقف الخسارة: {stop_loss:.2f}", parse_mode='Markdown')
+    
+    session_db = Session()
+    try:
+        session_db.add(Opportunity(stock_symbol=symbol, strategy_name=strategy_name, 
+                                   targets=','.join(map(str, targets)), stop_loss=stop_loss, 
+                                   status='active', message_id=message.message_id))
+        session_db.commit()
+    finally:
+        session_db.close()
+
+async def track_opportunity_targets(context):
+    session_db = Session()
+    try:
+        async with ClientSession() as session_client:
+            for opportunity in session_db.query(Opportunity).filter_by(status='active').all():
+                data = await fetch_stock_data(opportunity.stock_symbol, session_client)
+                if data is not None:
+                    current_price = data['close'].iloc[-1]
+                    targets = [float(t) for t in opportunity.targets.split(',')]
+                    for i, target in enumerate(targets):
+                        if current_price >= target:
+                            original_message = await context.bot.get_message(chat_id=context.job.chat_id, message_id=opportunity.message_id)
+                            congrat_message = f"{emoji.emojize(':tada:')} **مبروك! تم تحقيق الهدف رقم {i+1}** للسهم {opportunity.stock_symbol} باستراتيجية {opportunity.strategy_name}\n\n" + \
+                                              f"الرسالة الأصلية:\n```\n{original_message.text}\n```"
+                            await context.bot.send_message(context.job.chat_id, congrat_message, parse_mode='Markdown')
+                            
+                            if i == len(targets) - 1:
+                                opportunity.status = 'completed'
+                                new_targets = [current_price * (1 + i * 0.05) for i in range(1, 6)]
+                                opportunity.targets = ','.join(map(str, new_targets))
+                                opportunity.stop_loss = current_price
+                                updated_message = f"{emoji.emojize(':star:')} **تم تحديث فرصة {opportunity.strategy_name}** للسهم {opportunity.stock_symbol}:\n" + \
+                                                  f"أهداف جديدة:\n" + "\n".join([f"{j+1}- {t:.2f}" for j, t in enumerate(new_targets)]) + \
+                                                  f"\nوقف الربح: {current_price:.2f}"
+                                new_msg = await context.bot.send_message(context.job.chat_id, updated_message, parse_mode='Markdown')
+                                opportunity.message_id = new_msg.message_id
+                            else:
+                                opportunity.targets = ','.join(map(str, targets[i+1:]))
+                            session_db.commit()
+                            break
+                    if current_price <= opportunity.stop_loss:
+                        opportunity.status = 'stop_loss'
+                        session_db.commit()
+                        await context.bot.send_message(context.job.chat_id, 
+                            f"**تم وقف الخسارة** للسهم {opportunity.stock_symbol} باستراتيجية {opportunity.strategy_name}", parse_mode='Markdown')
+    finally:
+        session_db.close()
+
+# إدارة الإعدادات
+async def manage_settings(update, context):
+    if update.message.chat.type == 'group':
+        group_id = str(update.message.chat_id)
+        session_db = Session()
+        try:
+            settings = session_db.query(GroupSettings).filter_by(group_id=group_id).first()
+            if not settings:
+                settings = GroupSettings(group_id=group_id)
+                session_db.add(settings)
+            
+            strategies = json.loads(settings.strategies)
+            keyboard = [
+                [InlineKeyboardButton("تفعيل النقاشات", callback_data='toggle_discussion')],
+                [InlineKeyboardButton("حذف الأرقام والروابط", callback_data='toggle_delete_numbers_links')],
+                [InlineKeyboardButton("تقرير ساعي", callback_data='toggle_hourly_report')],
+                [InlineKeyboardButton("تقرير يومي", callback_data='toggle_daily_report')],
+                [InlineKeyboardButton("تقرير أسبوعي", callback_data='toggle_weekly_report')],
+                [InlineKeyboardButton(f"فرصة ذهبية - {'مفعل' if strategies['golden_opportunity'] else 'غير مفعل'}", callback_data='toggle_golden_opportunity')],
+                [InlineKeyboardButton(f"التوقعات السرية - {'مفعل' if strategies['fibonacci_breakout'] else 'غير مفعل'}", callback_data='toggle_fibonacci_breakout')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text("إعدادات البوت:", reply_markup=reply_markup)
+        finally:
+            session_db.close()
+
+# معالجة الضغط على الزر
+async def button(update, context):
+    query = update.callback_query
+    await query.answer()
+    session_db = Session()
+    try:
+        group_id = str(query.message.chat_id)
+        settings = session_db.query(GroupSettings).filter_by(group_id=group_id).first()
+        if not settings:
+            settings = GroupSettings(group_id=group_id)
+            session_db.add(settings)
         
-        # تحديث الأهداف
-        if current_price >= opp.targets[-1]:
-            new_targets = [round(t * 1.1, 2) for t in opp.targets]  # زيادة الأهداف 10%
-            opp.targets = new_targets
-            session.commit()
-            
-            # إرسال إشعار التحديث
-            context.bot.send_message(
-                chat_id=opp.chat_id,
-                text=f"🎯 تم تحديث الأهداف لـ {opp.symbol}\nالأهداف الجديدة: {new_targets}",
-                reply_to_message_id=opp.message_id
-            )
+        strategies = json.loads(settings.strategies)
+        
+        if query.data == 'toggle_discussion':
+            settings.allow_discussion = not settings.allow_discussion
+        elif query.data == 'toggle_delete_numbers_links':
+            settings.delete_phone_numbers_and_links = not settings.delete_phone_numbers_and_links
+        elif query.data == 'toggle_hourly_report':
+            settings.enable_hourly_report = not settings.enable_hourly_report
+        elif query.data == 'toggle_daily_report':
+            settings.enable_daily_report = not settings.enable_daily_report
+        elif query.data == 'toggle_weekly_report':
+            settings.enable_weekly_report = not settings.enable_weekly_report
+        elif query.data == 'toggle_golden_opportunity':
+            strategies['golden_opportunity'] = not strategies['golden_opportunity']
+        elif query.data == 'toggle_fibonacci_breakout':
+            strategies['fibonacci_breakout'] = not strategies['fibonacci_breakout']
+        
+        settings.strategies = json.dumps(strategies)
+        session_db.commit()
+        await query.edit_message_text(f"تم تحديث الإعدادات: {query.data}", parse_mode='Markdown')
+    finally:
+        session_db.close()
 
-# ------------------ Reporting System ------------------
-async def send_hourly_report(context):
-    session = Session()
-    top_gainers = session.query(StockData).order_by(text("data->>'Close' DESC")).limit(5).all()
-    top_losers = session.query(StockData).order_by(text("data->>'Close' ASC")).limit(5).all()
-    
-    report = "📊 تقرير الساعة:\n\n"
-    report += "📈 أكبر 5 صاعدين:\n" + "\n".join([f"{stock.symbol}: +{get_price_change(stock):.2f}%" for stock in top_gainers])
-    report += "\n\n📉 أكبر 5 هابطين:\n" + "\n".join([f"{stock.symbol}: {get_price_change(stock):.2f}%" for stock in top_losers])
-    
-    await context.bot.send_message(chat_id=context.job.chat_id, text=arabic_text(report))
+# إدارة رسائل المجموعة
+async def handle_group_message(update, context):
+    message = update.message
+    session_db = Session()
+    try:
+        settings = session_db.query(GroupSettings).filter_by(group_id=str(message.chat_id)).first()
+        if settings and settings.delete_phone_numbers_and_links:
+            text = message.text.lower()
+            if re.search(r'\+?\d[\d\-\s\.\(\)]{8,}\d', text) or \
+               re.search(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', text) or \
+               re.search(r'whatsapp\.com|wa\.me', text):
+                await message.delete()
+        if settings and not settings.allow_discussion:
+            await message.delete()
+    finally:
+        session_db.close()
 
-def get_price_change(stock):
-    data = pd.read_json(stock.data)
-    return ((data['Close'].iloc[-1] - data['Open'].iloc[-1]) / data['Open'].iloc[-1]) * 100
+# تهيئة البوت
+async def start(update, context):
+    await update.message.reply_text(f"مرحبًا بك في بوت الراصد لرصد السوق السعودي! اضغط هنا للإعدادات.",
+                                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("إعدادات", callback_data='settings')]]))
+    group_id = str(update.message.chat_id)
+    session_db = Session()
+    try:
+        if not session_db.query(GroupSettings).filter_by(group_id=group_id).first():
+            session_db.add(GroupSettings(group_id=group_id))
+            session_db.commit()
+    finally:
+        session_db.close()
 
-# ------------------ Command Handlers ------------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    menu = [
-        [InlineKeyboardButton("⚙️ الإعدادات", callback_data='settings')],
-        [InlineKeyboardButton("📈 تحليل سهم", callback_data='analyze')],
-        [InlineKeyboardButton("📆 التقارير", callback_data='reports')]
-    ]
-    
-    await update.message.reply_text(
-        arabic_text("مرحبا! أنا بوت متابعة الأسهم السعودية 🛰️"),
-        reply_markup=InlineKeyboardMarkup(menu)
-    )
+# جدولة المهام
+scheduler = AsyncIOScheduler()
+scheduler.add_job(update_stock_data, 'interval', minutes=5)
+scheduler.add_job(lambda: asyncio.create_task(check_strategies(ContextTypes.DEFAULT_TYPE())), 'interval', minutes=30)
+scheduler.add_job(lambda: asyncio.create_task(track_opportunity_targets(ContextTypes.DEFAULT_TYPE())), 'interval', minutes=15)
+scheduler.add_job(lambda: asyncio.create_task(send_report(ContextTypes.DEFAULT_TYPE(), "ساعي")) if Session().query(GroupSettings).filter_by(enable_hourly_report=True).first() else None, 'interval', minutes=60)
+scheduler.add_job(lambda: asyncio.create_task(send_report(ContextTypes.DEFAULT_TYPE(), "يومي")) if Session().query(GroupSettings).filter_by(enable_daily_report=True).first() else None, 'cron', hour=9)
+scheduler.add_job(lambda: asyncio.create_task(send_report(ContextTypes.DEFAULT_TYPE(), "أسبوعي")) if Session().query(GroupSettings).filter_by(enable_weekly_report=True).first() else None, 'cron', day_of_week='mon', hour=9)
+scheduler.start()
 
-async def analyze_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    session = Session()
-    user = session.query(UserActivity).filter_by(user_id=user_id).first()
-    
-    if not user:
-        user = UserActivity(user_id=user_id)
-        session.add(user)
-    
-    if user.analysis_count >= context.chat_data.get('analysis_limit', 5):
-        await update.message.reply_text(arabic_text("⚠️ لقد تجاوزت الحد اليومي للاستعلامات."))
-        return
-    
-    symbol = context.args[0]
-    data = get_stock_analysis(symbol)
-    
-    # إرسال التحليل مع الصور والمخططات
-    await update.message.reply_photo(
-        photo=generate_chart(symbol),
-        caption=arabic_text(data['analysis']),
-        parse_mode='HTML'
-    )
-    
-    user.analysis_count += 1
-    user.last_analysis = get_saudi_time()
-    session.commit()
-
-# ------------------ Main Bot Setup ------------------
-def main():
+# تشغيل البوت
+async def main():
     application = Application.builder().token(TOKEN).build()
     
-    # تسجيل ال handlers
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("analyze", analyze_stock))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_group_message))
+    application.add_handler(CallbackQueryHandler(button))
     
-    # المهام المجدولة
-    scheduler = BackgroundScheduler(timezone=SAUDI_TIMEZONE)
-    scheduler.add_job(update_all_stocks, 'interval', hours=1)
-    scheduler.add_job(send_hourly_report, CronTrigger(minute=0))
-    scheduler.start()
-    
-    # تشغيل البوت
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get('PORT', 5000)),
-        webhook_url=WEBHOOK_URL,
-        url_path=TOKEN
-    )
+    await application.run_polling()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
