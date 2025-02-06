@@ -10,3 +10,5 @@ beautifulsoup4>=4.12.2
 python-bidi>=0.4.2
 arabic-reshaper>=3.0.0
 psycopg2-binary==2.9.9
+emoji
+aiohttp
