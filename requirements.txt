@@ -12,3 +12,4 @@ arabic-reshaper>=3.0.0
 psycopg2-binary==2.9.9
 emoji
 aiohttp
+pandas-ta>=0.3.14b0
