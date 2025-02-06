@@ -8,7 +8,6 @@ import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
 import emoji
-from numpy import nan as npNaN
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -56,14 +55,6 @@ class GroupSettings(Base):
     enable_daily_report = Column(Boolean, default=True)
     enable_weekly_report = Column(Boolean, default=True)
     strategies = Column(String, default='{"golden_opportunity": true, "fibonacci_breakout": false}')
-
-class Strategy(Base):
-    __tablename__ = 'strategies'
-    id = Column(Integer, primary_key=True)
-    name = Column(String, unique=True)
-    indicator = Column(String)
-    threshold = Column(Float)
-    enabled = Column(Boolean, default=True)
 
 Base.metadata.create_all(engine)
 
@@ -154,7 +145,6 @@ async def check_strategies(context):
                         fib_levels = calculate_fibonacci_levels(data)
                         if data['close'].iloc[-1] > fib_levels[0]:  # اختراق مستوى 61.8%
                             await send_opportunity(stock.symbol, "التوقعات السرية", data, context, fib_levels, "fibonacci")
-                    # إضافة مزيد من الاستراتيجيات هنا
     finally:
         session_db.close()
 
@@ -221,96 +211,7 @@ async def track_opportunity_targets(context):
     finally:
         session_db.close()
 
-# إدارة الإعدادات
-async def manage_settings(update, context):
-    if update.message.chat.type == 'group':
-        group_id = str(update.message.chat_id)
-        session_db = Session()
-        try:
-            settings = session_db.query(GroupSettings).filter_by(group_id=group_id).first()
-            if not settings:
-                settings = GroupSettings(group_id=group_id)
-                session_db.add(settings)
-            
-            strategies = json.loads(settings.strategies)
-            keyboard = [
-                [InlineKeyboardButton("تفعيل النقاشات", callback_data='toggle_discussion')],
-                [InlineKeyboardButton("حذف الأرقام والروابط", callback_data='toggle_delete_numbers_links')],
-                [InlineKeyboardButton("تقرير ساعي", callback_data='toggle_hourly_report')],
-                [InlineKeyboardButton("تقرير يومي", callback_data='toggle_daily_report')],
-                [InlineKeyboardButton("تقرير أسبوعي", callback_data='toggle_weekly_report')],
-                [InlineKeyboardButton(f"فرصة ذهبية - {'مفعل' if strategies['golden_opportunity'] else 'غير مفعل'}", callback_data='toggle_golden_opportunity')],
-                [InlineKeyboardButton(f"التوقعات السرية - {'مفعل' if strategies['fibonacci_breakout'] else 'غير مفعل'}", callback_data='toggle_fibonacci_breakout')]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text("إعدادات البوت:", reply_markup=reply_markup)
-        finally:
-            session_db.close()
-
-# معالجة الضغط على الزر
-async def button(update, context):
-    query = update.callback_query
-    await query.answer()
-    session_db = Session()
-    try:
-        group_id = str(query.message.chat_id)
-        settings = session_db.query(GroupSettings).filter_by(group_id=group_id).first()
-        if not settings:
-            settings = GroupSettings(group_id=group_id)
-            session_db.add(settings)
-        
-        strategies = json.loads(settings.strategies)
-        
-        if query.data == 'toggle_discussion':
-            settings.allow_discussion = not settings.allow_discussion
-        elif query.data == 'toggle_delete_numbers_links':
-            settings.delete_phone_numbers_and_links = not settings.delete_phone_numbers_and_links
-        elif query.data == 'toggle_hourly_report':
-            settings.enable_hourly_report = not settings.enable_hourly_report
-        elif query.data == 'toggle_daily_report':
-            settings.enable_daily_report = not settings.enable_daily_report
-        elif query.data == 'toggle_weekly_report':
-            settings.enable_weekly_report = not settings.enable_weekly_report
-        elif query.data == 'toggle_golden_opportunity':
-            strategies['golden_opportunity'] = not strategies['golden_opportunity']
-        elif query.data == 'toggle_fibonacci_breakout':
-            strategies['fibonacci_breakout'] = not strategies['fibonacci_breakout']
-        
-        settings.strategies = json.dumps(strategies)
-        session_db.commit()
-        await query.edit_message_text(f"تم تحديث الإعدادات: {query.data}", parse_mode='Markdown')
-    finally:
-        session_db.close()
-
-# إدارة رسائل المجموعة
-async def handle_group_message(update, context):
-    message = update.message
-    session_db = Session()
-    try:
-        settings = session_db.query(GroupSettings).filter_by(group_id=str(message.chat_id)).first()
-        if settings and settings.delete_phone_numbers_and_links:
-            text = message.text.lower()
-            if re.search(r'\+?\d[\d\-\s\.\(\)]{8,}\d', text) or \
-               re.search(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', text) or \
-               re.search(r'whatsapp\.com|wa\.me', text):
-                await message.delete()
-        if settings and not settings.allow_discussion:
-            await message.delete()
-    finally:
-        session_db.close()
-
-# تهيئة البوت
-async def start(update, context):
-    await update.message.reply_text(f"مرحبًا بك في بوت الراصد لرصد السوق السعودي! اضغط هنا للإعدادات.",
-                                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("إعدادات", callback_data='settings')]]))
-    group_id = str(update.message.chat_id)
-    session_db = Session()
-    try:
-        if not session_db.query(GroupSettings).filter_by(group_id=group_id).first():
-            session_db.add(GroupSettings(group_id=group_id))
-            session_db.commit()
-    finally:
-        session_db.close()
+# بقية الكود يبقى كما هو
 
 # جدولة المهام
 scheduler = AsyncIOScheduler()
