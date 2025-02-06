@@ -16,22 +16,21 @@ import requests
 from bs4 import BeautifulSoup
 import arabic_reshaper
 from bidi.algorithm import get_display
+import psycopg2  # ضروري لPostgreSQL
 
 # ------------------ Configuration ------------------
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
 SAUDI_TIMEZONE = pytz.timezone('Asia/Riyadh')
 TRADING_HOURS = {'start': (9, 30), 'end': (15, 0)}
-STOCK_SYMBOLS_URL = "https://api.example.com/saudi_stocks"  # Replace with actual source
-ANNOUNCEMENTS_URL = "https://example.com/announcements"
-HADITHS_DATASET = [
-    {"text": "حديث 1...", "day_type": "general"},
-    # ... Add 30+ Hadiths
-]
+STOCK_SYMBOLS = ['1211', '2222', '3030', '4200']  # قائمة افتراضية يمكن تحديثها
+
+# إصلاح مشكلة PostgreSQL
+DATABASE_URL = os.environ.get('DATABASE_URL').replace("postgres://", "postgresql://", 1)
 
 # Initialize database
 Base = declarative_base()
-engine = create_engine(os.environ.get('DATABASE_URL'))
+engine = create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
 
 # ------------------ Database Models ------------------
@@ -49,18 +48,13 @@ class GroupSettings(Base):
         'announcements': True,
         'delete_messages': True
     })
-    report_times = Column(JSON, default={
-        'hourly': True,
-        'daily': True,
-        'weekly': True
-    })
+    report_times = Column(JSON, default={'hourly': True, 'daily': True, 'weekly': True})
 
 class StockData(Base):
     __tablename__ = 'stock_data'
     symbol = Column(String(4), primary_key=True)
     data = Column(JSON)
-    historical_highs = Column(JSON)
-    historical_lows = Column(JSON)
+    historical_data = Column(JSON)
     last_updated = Column(DateTime)
 
 class GoldenOpportunity(Base):
@@ -83,14 +77,11 @@ class TechnicalPattern(Base):
     stop_loss = Column(Float)
     detected_at = Column(DateTime)
 
-class HadithSchedule(Base):
-    __tablename__ = 'hadith_schedule'
+class Hadith(Base):
+    __tablename__ = 'hadiths'
     id = Column(Integer, primary_key=True)
-    chat_id = Column(String)
-    schedule = Column(JSON, default={
-        'general': {'enabled': True, 'times': ['08:00', '12:00', '18:00']},
-        'friday': {'enabled': True, 'times': ['07:00', '15:00']}
-    })
+    text = Column(Text)
+    day_type = Column(String)
 
 Base.metadata.create_all(engine)
 
@@ -114,190 +105,119 @@ def is_trading_time():
     end = now.replace(hour=TRADING_HOURS['end'][0], minute=TRADING_HOURS['end'][1], second=0)
     return start <= now <= end
 
-# ------------------ Data Management ------------------
-def update_stock_symbols():
+# ------------------ Enhanced Stock Data Management ------------------
+def update_stock_data(symbol):
     try:
-        response = requests.get(STOCK_SYMBOLS_URL)
-        symbols = response.json()
-        session = Session()
-        for symbol in symbols:
-            if not session.query(StockData).filter_by(symbol=symbol).first():
-                session.add(StockData(symbol=symbol))
-        session.commit()
-        session.close()
-    except Exception as e:
-        logging.error(f"Error updating symbols: {e}")
-
-def refresh_stock_data(symbol):
-    try:
-        data = yf.download(f"{symbol}.SR", period="1y", interval="1wk")
+        data = yf.download(f"{symbol}.SR", period="1y", interval="1d")
         if not data.empty:
             session = Session()
             stock = session.query(StockData).filter_by(symbol=symbol).first()
+            if not stock:
+                stock = StockData(symbol=symbol)
+            
+            # تحديث البيانات التاريخية
+            historical = {
+                'daily_high': data['High'].max(),
+                'daily_low': data['Low'].min(),
+                'weekly_high': data['High'].resample('W').max().to_dict(),
+                'all_time_high': data['High'].cummax().iloc[-1]
+            }
+            
             stock.data = data.to_json()
-            
-            # Update historical records
-            stock.historical_highs = {
-                'monthly': data['High'].resample('M').max().to_dict(),
-                'yearly': data['High'].resample('Y').max().to_dict(),
-                'all_time': data['High'].max()
-            }
-            
-            stock.historical_lows = {
-                'monthly': data['Low'].resample('M').min().to_dict(),
-                'yearly': data['Low'].resample('Y').min().to_dict(),
-                'all_time': data['Low'].min()
-            }
-            
+            stock.historical_data = historical
+            stock.last_updated = get_saudi_time()
+            session.add(stock)
             session.commit()
             session.close()
     except Exception as e:
         logging.error(f"Error updating {symbol}: {e}")
 
-# ------------------ Technical Analysis ------------------
+# ------------------ Advanced Technical Analysis ------------------
 def calculate_rsi(data, period=14):
     delta = data['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
+    gain = (delta.where(delta > 0, 0)).fillna(0)
+    loss = (-delta.where(delta < 0, 0)).fillna(0)
+    
+    avg_gain = gain.rolling(window=period).mean()
+    avg_loss = loss.rolling(window=period).mean()
+    
+    rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-def detect_golden_opportunity(symbol):
+def detect_historical_extremes(symbol):
     session = Session()
     stock = session.query(StockData).filter_by(symbol=symbol).first()
-    if not stock:
-        return None
-    
     data = pd.read_json(stock.data)
-    rsi = calculate_rsi(data)
     
-    if rsi[-1] > 70 and rsi[-2] <= 70:
-        entry_price = data['Close'][-1]
-        fib_levels = calculate_fib_levels(data['High'].max(), data['Low'].min())
-        targets = [round(entry_price * (1 - level), 2) for level in [0.236, 0.382, 0.5, 0.618]]
-        stop_loss = data['High'][-2]
-        
-        opportunity = GoldenOpportunity(
-            symbol=symbol,
-            entry_price=entry_price,
-            targets=targets,
-            stop_loss=stop_loss
-        )
-        session.add(opportunity)
-        session.commit()
-        return opportunity
-    return None
+    current_price = data['Close'].iloc[-1]
+    alerts = []
+    
+    if current_price >= stock.historical_data['all_time_high']:
+        alerts.append('سجل أعلى مستوى تاريخي جديد! 📈')
+    
+    # إضافة تنبيهات أخرى...
+    return alerts
 
-# ------------------ Message Handlers ------------------
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    session = Session()
-    chat_id = str(update.effective_chat.id)
-    group_settings = session.query(GroupSettings).filter_by(chat_id=chat_id).first()
+# ------------------ Dynamic Settings Menu ------------------
+async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("التقارير التلقائية", callback_data='settings:reports')],
+        [InlineKeyboardButton("الفرص الذهبية", callback_data='settings:golden')],
+        [InlineKeyboardButton("الإشعارات الفورية", callback_data='settings:alerts')],
+        [InlineKeyboardButton("إدارة المجموعة", callback_data='settings:group')]
+    ]
     
-    # Message filtering
-    if group_settings.settings['delete_messages']:
-        if re.search(r'(\+?\d{10,13}|https?://)', update.message.text):
-            await delete_message(context, chat_id, update.message.message_id)
-            return
-            
-        if group_settings.settings['group_locked'] and not is_admin(update):
-            await delete_message(context, chat_id, update.message.message_id)
-            await context.bot.send_message(
-                chat_id,
-                arabic_text("⚠️ النشر مقفل حالياً أثناء ساعات التداول"),
-                reply_to_message_id=update.message.message_id
-            )
-            return
-    
-    # Stock symbol analysis
-    if re.match(r'^\d{4}$', update.message.text):
-        symbol = update.message.text
-        stock = session.query(StockData).filter_by(symbol=symbol).first()
-        if stock:
-            analysis = generate_stock_analysis(stock)
-            await update.message.reply_text(arabic_text(analysis), parse_mode='HTML')
-
-# ------------------ Scheduled Tasks ------------------
-async def send_periodic_reports(context):
-    session = Session()
-    groups = session.query(GroupSettings).all()
-    
-    for group in groups:
-        if group.settings['reports']:
-            report = generate_market_report()
-            await context.bot.send_message(
-                group.chat_id,
-                arabic_text(report),
-                parse_mode='HTML',
-                disable_web_page_preview=True
-            )
-
-async def check_opportunities(context):
-    session = Session()
-    symbols = session.query(StockData.symbol).all()
-    
-    for symbol in symbols:
-        opportunity = detect_golden_opportunity(symbol[0])
-        if opportunity:
-            groups = session.query(GroupSettings).filter_by(settings__golden_opportunities=True).all()
-            message = format_opportunity_message(opportunity)
-            for group in groups:
-                sent = await context.bot.send_message(
-                    group.chat_id,
-                    arabic_text(message),
-                    parse_mode='HTML'
-                )
-                opportunity.message_id = sent.message_id
-                session.commit()
-
-# ------------------ Admin Controls ------------------
-async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    data = query.data.split(':')
-    
-    session = Session()
-    group = session.query(GroupSettings).filter_by(chat_id=query.message.chat_id).first()
-    
-    if data[0] == 'toggle':
-        group.settings[data[1]] = not group.settings[data[1]]
-    elif data[0] == 'set_time':
-        group.report_times[data[1]] = data[2]
-    
-    session.commit()
-    await update_settings_message(query.message, group)
-
-async def update_settings_message(message, group):
-    keyboard = []
-    for setting, value in group.settings.items():
-        text = f"{'✅' if value else '❌'} {setting.replace('_', ' ').title()}"
-        keyboard.append([InlineKeyboardButton(text, callback_data=f'toggle:{setting}')])
-    
-    await message.edit_text(
-        arabic_text("⚙️ إعدادات المجموعة:"),
+    await update.message.reply_text(
+        arabic_text("⚙️ لوحة التحكم المتقدمة:"),
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# ------------------ Main Setup ------------------
+async def settings_handler(update: Update, context: CallbackContext):
+    query = update.callback_query
+    action = query.data.split(':')[1]
+    
+    session = Session()
+    group = session.query(GroupSettings).filter_by(chat_id=query.message.chat.id).first()
+    
+    new_status = not group.settings[action]
+    group.settings[action] = new_status
+    
+    session.commit()
+    session.close()
+    
+    await query.answer(f"تم {'تفعيل' if new_status else 'إيقاف'} الميزة بنجاح")
+    await update_settings_display(query.message, group.settings)
+
+# ------------------ Enhanced Message Templates ------------------
+def format_stock_alert(symbol, alert_type):
+    templates = {
+        'all_time_high': "🔥 {symbol} سجل أعلى مستوى تاريخي جديد!",
+        'weekly_high': "📈 {symbol} وصل أعلى مستوى أسبوعي",
+        'rsi_break': "🚨 إشارة بيع قوية لـ {symbol} (RSI فوق 70)"
+    }
+    return arabic_text(templates[alert_type].format(symbol=symbol))
+
+# ------------------ Main Bot Setup ------------------
 def main():
     application = Application.builder().token(TOKEN).build()
     
     # Handlers
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(CallbackQueryHandler(settings_callback))
+    application.add_handler(CommandHandler("settings", show_settings))
+    application.add_handler(CallbackQueryHandler(settings_handler, pattern='^settings:'))
     
-    # Webhook setup
+    # Webhook configuration
     application.run_webhook(
         listen="0.0.0.0",
         port=int(os.environ.get('PORT', 5000)),
-        url_path=TOKEN,
-        webhook_url=WEBHOOK_URL
+        webhook_url=WEBHOOK_URL,
+        url_path=TOKEN
     )
     
     # Scheduler
     scheduler = BackgroundScheduler(timezone=SAUDI_TIMEZONE)
-    scheduler.add_job(send_periodic_reports, CronTrigger(hour="*/1"))
-    scheduler.add_job(check_opportunities, CronTrigger(day_of_week="sun-thu", hour="9-15", minute="*/15"))
+    scheduler.add_job(check_market_alerts, 'interval', minutes=5)
+    scheduler.add_job(send_daily_reports, CronTrigger(hour=18, minute=0))
     scheduler.start()
 
 if __name__ == "__main__":
