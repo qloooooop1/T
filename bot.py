@@ -19,6 +19,7 @@ import arabic_reshaper
 from bidi.algorithm import get_display
 import psycopg2
 import json
+from functools import partial
 
 # ------------------ Configuration ------------------
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
@@ -120,7 +121,6 @@ def update_stock_data(symbol):
             stock = session.query(StockData).filter_by(symbol=symbol).first() or StockData(symbol=symbol)
             stock.data = data.to_json()
             
-            # حساب المؤشرات الفنية
             data['MA50'] = data['Close'].rolling(50).mean()
             data['MA200'] = data['Close'].rolling(200).mean()
             data['RSI'] = calculate_rsi(data)
@@ -162,7 +162,7 @@ def calculate_macd(data, fast=12, slow=26, signal=9):
     return macd - signal_line
 
 # ------------------ Opportunity System ------------------
-async def check_opportunities():
+async def check_opportunities(context):
     session = Session()
     try:
         for symbol in STOCK_SYMBOLS:
@@ -173,15 +173,12 @@ async def check_opportunities():
             data = pd.read_json(stock.data)
             tech = stock.technicals
             
-            # Golden Cross Strategy
             if tech['trend'] == 'صاعد' and data['MA50'].iloc[-2] < data['MA200'].iloc[-2]:
                 create_opportunity(session, symbol, 'golden_cross', data)
                 
-            # RSI Divergence Strategy
             if tech['rsi'] < 30 and data['Close'].iloc[-1] < data['Close'].iloc[-2]:
                 create_opportunity(session, symbol, 'rsi_divergence', data)
                 
-            # Volume Spike Strategy
             if tech['volume'] > (data['Volume'].mean() * 2):
                 create_opportunity(session, symbol, 'volume_spike', data)
                 
@@ -206,10 +203,9 @@ def create_opportunity(session, symbol, strategy, data):
         created_at=get_saudi_time()
     )
     session.add(opp)
-    
     return opp
 
-async def track_targets():
+async def track_targets(context):
     session = Session()
     try:
         opportunities = session.query(Opportunity).filter_by(status='active').all()
@@ -225,7 +221,7 @@ async def track_targets():
                 await close_opportunity(context, opp, 'stopped')
                 
             elif current_price >= opp.stop_profit:
-                await update_stop_profit(opp)
+                await update_stop_profit(context, opp)
                 
     except Exception as e:
         logging.error(f"Tracking error: {e}")
@@ -244,20 +240,18 @@ async def update_opportunity_target(context, opp, current_price):
         السعر الحالي: {current_price:.2f}
         """)
         
-        groups = session.query(GroupSettings).filter(
-            GroupSettings.settings['strategies'][opp.strategy].astext.cast(Boolean) == True
-        ).all()
-        
+        groups = session.query(GroupSettings).all()
         for group in groups:
-            await context.bot.send_message(
-                chat_id=group.chat_id,
-                text=alert_msg,
-                reply_to_message_id=opp.message_id
-            )
+            if group.settings['strategies'].get(opp.strategy, False):
+                await context.bot.send_message(
+                    chat_id=group.chat_id,
+                    text=alert_msg,
+                    reply_to_message_id=opp.message_id
+                )
         
         if opp.current_target >= len(opp.targets):
             await close_opportunity(context, opp, 'completed')
-            await create_new_targets(opp)
+            await create_new_targets(context, opp)
             
         session.commit()
     finally:
@@ -272,7 +266,6 @@ async def close_opportunity(context, opp, status):
         status_msg = arabic_text(f"""
         🏁 إنتهاء الفرصة لـ {opp.symbol}
         الحالة: {'مكتملة' if status == 'completed' else 'متوقفة'}
-        الأرباح: {(opp.entry_price - opp.stop_loss):.2f}
         """)
         
         await context.bot.send_message(
@@ -283,7 +276,7 @@ async def close_opportunity(context, opp, status):
     finally:
         session.close()
 
-async def create_new_targets(opp):
+async def create_new_targets(context, opp):
     session = Session()
     try:
         new_targets = [opp.targets[-1] * (1 + (i * 0.03)) for i in range(1, 4)]
@@ -297,6 +290,16 @@ async def create_new_targets(opp):
         )
         session.add(new_opp)
         session.commit()
+        
+        message = arabic_text(f"""
+        🚀 فرصة متابعة جديدة لـ {opp.symbol}
+        الأهداف الجديدة: {', '.join(map(str, new_targets))}
+        """)
+        
+        await context.bot.send_message(
+            chat_id=opp.message_id,
+            text=message
+        )
     finally:
         session.close()
 
@@ -313,9 +316,9 @@ async def generate_hourly_report(context):
 async def generate_daily_report(context):
     session = Session()
     try:
-        report = await calculate_top_movers(session, 'daily')
+        price_report = await calculate_price_analysis(session)
         volume_report = await calculate_volume_analysis(session)
-        full_report = report + "\n\n" + volume_report
+        full_report = f"{price_report}\n\n{volume_report}"
         groups = session.query(GroupSettings).filter_by(settings__reports__daily=True).all()
         await send_report(context, groups, full_report)
     finally:
@@ -324,9 +327,9 @@ async def generate_daily_report(context):
 async def generate_weekly_report(context):
     session = Session()
     try:
-        report = await calculate_weekly_performance(session)
+        weekly_report = await calculate_weekly_analysis(session)
         opportunity_report = await calculate_opportunity_performance(session)
-        full_report = report + "\n\n" + opportunity_report
+        full_report = f"{weekly_report}\n\n{opportunity_report}"
         groups = session.query(GroupSettings).filter_by(settings__reports__weekly=True).all()
         await send_report(context, groups, full_report)
     finally:
@@ -341,9 +344,45 @@ async def calculate_top_movers(session, period):
         movers.append((symbol, change))
     
     movers.sort(key=lambda x: x[1], reverse=True)
-    report = arabic_text(f"📊 أعلى 5 شركات ({period}):\n") + "\n".join(
-        [f"{i+1}. {sym}: {chg:.2f}%" for i, (sym, chg) in enumerate(movers[:5])]
+    top5 = movers[:5]
+    bottom5 = movers[-5:]
+    
+    report = arabic_text(f"📊 تقرير {period}:\n")
+    report += arabic_text("\n🏆 أعلى 5 شركات:\n") + "\n".join(
+        [f"{i+1}. {sym}: {chg:.2f}%" for i, (sym, chg) in enumerate(top5)]
     )
+    report += arabic_text("\n\n🔻 أقل 5 شركات:\n") + "\n".join(
+        [f"{i+1}. {sym}: {chg:.2f}%" for i, (sym, chg) in enumerate(bottom5)]
+    )
+    return report
+
+async def calculate_price_analysis(session):
+    analysis = []
+    for symbol in STOCK_SYMBOLS:
+        stock = session.query(StockData).filter_by(symbol=symbol).first()
+        data = pd.read_json(stock.data)
+        analysis.append({
+            'symbol': symbol,
+            'open': data['Open'].iloc[-1],
+            'close': data['Close'].iloc[-1],
+            'change': (data['Close'].iloc[-1] - data['Open'].iloc[-1]) / data['Open'].iloc[-1] * 100
+        })
+    
+    gainers = sorted(analysis, key=lambda x: x['change'], reverse=True)[:5]
+    losers = sorted(analysis, key=lambda x: x['change'])[:5]
+    
+    report = arabic_text("📈 التقرير اليومي:\n")
+    report += arabic_text("\n📈 أعلى 5 شركات:\n") + "\n".join(
+        [f"{i+1}. {item['symbol']}: {item['change']:.2f}%" for i, item in enumerate(gainers)]
+    )
+    report += arabic_text("\n\n📉 أقل 5 شركات:\n") + "\n".join(
+        [f"{i+1}. {item['symbol']}: {item['change']:.2f}%" for i, item in enumerate(losers)]
+    )
+    
+    total_gainers = len([x for x in analysis if x['change'] > 0])
+    total_losers = len([x for x in analysis if x['change'] < 0])
+    report += arabic_text(f"\n\n📊 الإجمالي:\nالرابحون: {total_gainers}\nالخاسرون: {total_losers}")
+    
     return report
 
 async def calculate_volume_analysis(session):
@@ -354,37 +393,39 @@ async def calculate_volume_analysis(session):
         volumes.append((symbol, data['Volume'].iloc[-1]))
     
     volumes.sort(key=lambda x: x[1], reverse=True)
-    report = arabic_text("📈 أعلى 5 أحجام تداول:\n") + "\n".join(
+    report = arabic_text("\n📊 تحليل الحجم:\n") + "\n".join(
         [f"{i+1}. {sym}: {vol:,}" for i, (sym, vol) in enumerate(volumes[:5])]
     )
     return report
 
-async def calculate_weekly_performance(session):
-    opportunities = session.query(Opportunity).filter(
-        Opportunity.created_at >= (get_saudi_time() - timedelta(days=7))
-    ).all()
+async def calculate_weekly_analysis(session):
+    analysis = []
+    for symbol in STOCK_SYMBOLS:
+        stock = session.query(StockData).filter_by(symbol=symbol).first()
+        data = pd.read_json(stock.data)
+        weekly_data = data.resample('W').last()
+        change = (weekly_data['Close'].iloc[-1] - weekly_data['Open'].iloc[-1]) / weekly_data['Open'].iloc[-1] * 100
+        analysis.append((symbol, change))
     
-    performance = {}
-    for opp in opportunities:
-        if opp.symbol not in performance:
-            performance[opp.symbol] = []
-        performance[opp.symbol].append(
-            (opp.entry_price, opp.targets, opp.status)
-        )
-    
-    report = arabic_text("📅 أداء الفرص الأسبوعي:\n")
-    for symbol, data in performance.items():
-        total_profit = sum([t[-1] - entry for entry, _, _ in data])
-        report += f"\n{symbol}: {len(data)} فرص - إجمالي الأرباح: {total_profit:.2f}"
-    
+    analysis.sort(key=lambda x: x[1], reverse=True)
+    report = arabic_text("📅 التقرير الأسبوعي:\n")
+    report += arabic_text("\n🏆 أعلى 5 شركات:\n") + "\n".join(
+        [f"{i+1}. {sym}: {chg:.2f}%" for i, (sym, chg) in enumerate(analysis[:5])]
+    )
+    report += arabic_text("\n\n🔻 أقل 5 شركات:\n") + "\n".join(
+        [f"{i+1}. {sym}: {chg:.2f}%" for i, (sym, chg) in enumerate(analysis[-5:])]
+    )
     return report
 
 async def send_report(context, groups, report):
     for group in groups:
-        await context.bot.send_message(
-            chat_id=group.chat_id,
-            text=report
-        )
+        try:
+            await context.bot.send_message(
+                chat_id=group.chat_id,
+                text=report
+            )
+        except Exception as e:
+            logging.error(f"Error sending report: {e}")
 
 # ------------------ Main Handlers ------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -417,7 +458,6 @@ async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             [InlineKeyboardButton("إدارة التقارير 📊", callback_data='report_settings')],
             [InlineKeyboardButton("إدارة الاستراتيجيات 🛠️", callback_data='strategy_settings')],
-            [InlineKeyboardButton("إدارة الحماية 🔒", callback_data='protection_settings')],
             [InlineKeyboardButton("إغلاق ❌", callback_data='close_settings')]
         ]
         
@@ -442,8 +482,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_report_settings(query, group)
         elif query.data == 'strategy_settings':
             await handle_strategy_settings(query, group)
-        elif query.data == 'protection_settings':
-            await handle_protection_settings(query, group)
         elif query.data.startswith('toggle_'):
             await toggle_setting(query, group)
         elif query.data == 'close_settings':
@@ -499,29 +537,29 @@ async def toggle_setting(query, group):
     await query.answer(f"تم {'تفعيل' if group.settings[category][setting] else 'تعطيل'} الإعداد")
 
 # ------------------ Scheduler Setup ------------------
-def schedule_jobs(scheduler):
+def schedule_jobs(scheduler, application):
     scheduler.add_job(
-        check_opportunities,
+        partial(check_opportunities, application),
         'interval',
         minutes=15,
         timezone=SAUDI_TIMEZONE
     )
     scheduler.add_job(
-        track_targets,
+        partial(track_targets, application),
         'interval',
         minutes=5,
         timezone=SAUDI_TIMEZONE
     )
     scheduler.add_job(
-        generate_hourly_report,
+        partial(generate_hourly_report, application),
         CronTrigger(minute=0, timezone=SAUDI_TIMEZONE)
     )
     scheduler.add_job(
-        generate_daily_report,
+        partial(generate_daily_report, application),
         CronTrigger(hour=15, minute=30, timezone=SAUDI_TIMEZONE)
     )
     scheduler.add_job(
-        generate_weekly_report,
+        partial(generate_weekly_report, application),
         CronTrigger(day_of_week='sun', hour=16, timezone=SAUDI_TIMEZONE)
     )
 
@@ -536,7 +574,7 @@ def main():
     
     # Scheduler
     scheduler = AsyncIOScheduler(timezone=SAUDI_TIMEZONE)
-    schedule_jobs(scheduler)
+    schedule_jobs(scheduler, application)
     scheduler.start()
     
     # Webhook
