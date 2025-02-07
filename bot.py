@@ -2,6 +2,7 @@ import os
 import re
 import logging
 import asyncio
+import signal
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -162,7 +163,7 @@ def calculate_macd(data, fast=12, slow=26, signal=9):
     return macd - signal_line
 
 # ------------------ Opportunity System ------------------
-async def check_opportunities(context: ContextTypes.DEFAULT_TYPE):
+async def check_opportunities(app: Application):
     session = Session()
     try:
         for symbol in STOCK_SYMBOLS:
@@ -205,7 +206,7 @@ def create_opportunity(session, symbol, strategy, data):
     session.add(opp)
     return opp
 
-async def track_targets(context: ContextTypes.DEFAULT_TYPE):
+async def track_targets(app: Application):
     session = Session()
     try:
         opportunities = session.query(Opportunity).filter_by(status='active').all()
@@ -215,20 +216,20 @@ async def track_targets(context: ContextTypes.DEFAULT_TYPE):
             current_price = data['Close'].iloc[-1]
             
             if current_price >= opp.targets[opp.current_target]:
-                await update_opportunity_target(context, opp, current_price)
+                await update_opportunity_target(app, opp, current_price)
                 
             elif current_price <= opp.stop_loss:
-                await close_opportunity(context, opp, 'stopped')
+                await close_opportunity(app, opp, 'stopped')
                 
             elif current_price >= opp.stop_profit:
-                await update_stop_profit(context, opp)
+                await update_stop_profit(app, opp)
                 
     except Exception as e:
         logging.error(f"Tracking error: {e}")
     finally:
         session.close()
 
-async def update_opportunity_target(context, opp, current_price):
+async def update_opportunity_target(app, opp, current_price):
     session = Session()
     try:
         opp.current_target += 1
@@ -243,21 +244,21 @@ async def update_opportunity_target(context, opp, current_price):
         groups = session.query(GroupSettings).all()
         for group in groups:
             if group.settings['strategies'].get(opp.strategy, False):
-                await context.bot.send_message(
+                await app.bot.send_message(
                     chat_id=group.chat_id,
                     text=alert_msg,
                     reply_to_message_id=opp.message_id
                 )
         
         if opp.current_target >= len(opp.targets):
-            await close_opportunity(context, opp, 'completed')
-            await create_new_targets(context, opp)
+            await close_opportunity(app, opp, 'completed')
+            await create_new_targets(app, opp)
             
         session.commit()
     finally:
         session.close()
 
-async def close_opportunity(context, opp, status):
+async def close_opportunity(app, opp, status):
     session = Session()
     try:
         opp.status = status
@@ -268,7 +269,7 @@ async def close_opportunity(context, opp, status):
         الحالة: {'مكتملة' if status == 'completed' else 'متوقفة'}
         """)
         
-        await context.bot.send_message(
+        await app.bot.send_message(
             chat_id=opp.message_id,
             text=status_msg,
             reply_to_message_id=opp.message_id
@@ -276,7 +277,7 @@ async def close_opportunity(context, opp, status):
     finally:
         session.close()
 
-async def create_new_targets(context, opp):
+async def create_new_targets(app, opp):
     session = Session()
     try:
         new_targets = [opp.targets[-1] * (1 + (i * 0.03)) for i in range(1, 4)]
@@ -296,7 +297,7 @@ async def create_new_targets(context, opp):
         الأهداف الجديدة: {', '.join(map(str, new_targets))}
         """)
         
-        await context.bot.send_message(
+        await app.bot.send_message(
             chat_id=opp.message_id,
             text=message
         )
@@ -304,34 +305,34 @@ async def create_new_targets(context, opp):
         session.close()
 
 # ------------------ Reporting System ------------------
-async def generate_hourly_report(context: ContextTypes.DEFAULT_TYPE):
+async def generate_hourly_report(app: Application):
     session = Session()
     try:
         report = await calculate_top_movers(session, 'hourly')
         groups = session.query(GroupSettings).filter_by(settings__reports__hourly=True).all()
-        await send_report(context, groups, report)
+        await send_report(app, groups, report)
     finally:
         session.close()
 
-async def generate_daily_report(context: ContextTypes.DEFAULT_TYPE):
+async def generate_daily_report(app: Application):
     session = Session()
     try:
         price_report = await calculate_price_analysis(session)
         volume_report = await calculate_volume_analysis(session)
         full_report = f"{price_report}\n\n{volume_report}"
         groups = session.query(GroupSettings).filter_by(settings__reports__daily=True).all()
-        await send_report(context, groups, full_report)
+        await send_report(app, groups, full_report)
     finally:
         session.close()
 
-async def generate_weekly_report(context: ContextTypes.DEFAULT_TYPE):
+async def generate_weekly_report(app: Application):
     session = Session()
     try:
         weekly_report = await calculate_weekly_analysis(session)
         opportunity_report = await calculate_opportunity_performance(session)
         full_report = f"{weekly_report}\n\n{opportunity_report}"
         groups = session.query(GroupSettings).filter_by(settings__reports__weekly=True).all()
-        await send_report(context, groups, full_report)
+        await send_report(app, groups, full_report)
     finally:
         session.close()
 
@@ -417,10 +418,10 @@ async def calculate_weekly_analysis(session):
     )
     return report
 
-async def send_report(context, groups, report):
+async def send_report(app, groups, report):
     for group in groups:
         try:
-            await context.bot.send_message(
+            await app.bot.send_message(
                 chat_id=group.chat_id,
                 text=report
             )
@@ -541,54 +542,62 @@ async def toggle_setting(query, group):
         session.close()
 
 # ------------------ Scheduler Setup ------------------
-def schedule_jobs(scheduler, application):
-    # Pass the application as a context to the jobs
+def schedule_jobs(scheduler, app):
     scheduler.add_job(
         check_opportunities,
         'interval',
         minutes=15,
-        args=[application],
+        args=[app],
         timezone=SAUDI_TIMEZONE
     )
     scheduler.add_job(
         track_targets,
         'interval',
         minutes=5,
-        args=[application],
+        args=[app],
         timezone=SAUDI_TIMEZONE
     )
     scheduler.add_job(
         generate_hourly_report,
         CronTrigger(minute=0, timezone=SAUDI_TIMEZONE),
-        args=[application]
+        args=[app]
     )
     scheduler.add_job(
         generate_daily_report,
         CronTrigger(hour=15, minute=30, timezone=SAUDI_TIMEZONE),
-        args=[application]
+        args=[app]
     )
     scheduler.add_job(
         generate_weekly_report,
         CronTrigger(day_of_week='sun', hour=16, timezone=SAUDI_TIMEZONE),
-        args=[application]
+        args=[app]
     )
 
 async def main():
-    # Create application with context
-    context = ContextTypes.DEFAULT_TYPE
+    # 初始化应用
     application = Application.builder().token(TOKEN).build()
     
-    # Add handlers
+    # 添加处理程序
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("settings", settings_menu))
     application.add_handler(CallbackQueryHandler(button_handler))
     
-    # Scheduler setup
+    # 初始化调度器
     scheduler = AsyncIOScheduler(timezone=SAUDI_TIMEZONE)
     schedule_jobs(scheduler, application)
+    
+    # 配置信号处理
+    loop = asyncio.get_event_loop()
+    for signame in ('SIGINT', 'SIGTERM'):
+        loop.add_signal_handler(
+            getattr(signal, signame),
+            lambda: asyncio.create_task(shutdown(scheduler, application))
+        )
+
+    # 启动调度器
     scheduler.start()
     
-    # Run webhook
+    # 启动Webhook
     await application.run_webhook(
         listen="0.0.0.0",
         port=int(os.environ.get('PORT', 5000)),
@@ -597,5 +606,30 @@ async def main():
         secret_token='WEBHOOK_SECRET'
     )
 
+async def shutdown(scheduler, app):
+    # 关闭调度器
+    scheduler.shutdown()
+    
+    # 关闭应用
+    await app.stop()
+    await app.shutdown()
+    
+    # 关闭数据库连接
+    engine.dispose()
+    
+    # 停止事件循环
+    loop = asyncio.get_event_loop()
+    loop.stop()
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    # 配置日志
+    logging.basicConfig(
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        level=logging.INFO
+    )
+    
+    # 运行主程序
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
