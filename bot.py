@@ -162,7 +162,7 @@ def calculate_macd(data, fast=12, slow=26, signal=9):
     return macd - signal_line
 
 # ------------------ Opportunity System ------------------
-async def check_opportunities(context):
+async def check_opportunities(context: ContextTypes.DEFAULT_TYPE):
     session = Session()
     try:
         for symbol in STOCK_SYMBOLS:
@@ -205,7 +205,7 @@ def create_opportunity(session, symbol, strategy, data):
     session.add(opp)
     return opp
 
-async def track_targets(context):
+async def track_targets(context: ContextTypes.DEFAULT_TYPE):
     session = Session()
     try:
         opportunities = session.query(Opportunity).filter_by(status='active').all()
@@ -304,7 +304,7 @@ async def create_new_targets(context, opp):
         session.close()
 
 # ------------------ Reporting System ------------------
-async def generate_hourly_report(context):
+async def generate_hourly_report(context: ContextTypes.DEFAULT_TYPE):
     session = Session()
     try:
         report = await calculate_top_movers(session, 'hourly')
@@ -313,7 +313,7 @@ async def generate_hourly_report(context):
     finally:
         session.close()
 
-async def generate_daily_report(context):
+async def generate_daily_report(context: ContextTypes.DEFAULT_TYPE):
     session = Session()
     try:
         price_report = await calculate_price_analysis(session)
@@ -324,7 +324,7 @@ async def generate_daily_report(context):
     finally:
         session.close()
 
-async def generate_weekly_report(context):
+async def generate_weekly_report(context: ContextTypes.DEFAULT_TYPE):
     session = Session()
     try:
         weekly_report = await calculate_weekly_analysis(session)
@@ -539,46 +539,50 @@ async def toggle_setting(query, group):
 # ------------------ Scheduler Setup ------------------
 def schedule_jobs(scheduler, application):
     scheduler.add_job(
-        partial(check_opportunities, application),
+        check_opportunities,
         'interval',
         minutes=15,
+        args=[application.context],
         timezone=SAUDI_TIMEZONE
     )
     scheduler.add_job(
-        partial(track_targets, application),
+        track_targets,
         'interval',
         minutes=5,
+        args=[application.context],
         timezone=SAUDI_TIMEZONE
     )
     scheduler.add_job(
-        partial(generate_hourly_report, application),
-        CronTrigger(minute=0, timezone=SAUDI_TIMEZONE)
+        generate_hourly_report,
+        CronTrigger(minute=0, timezone=SAUDI_TIMEZONE),
+        args=[application.context]
     )
     scheduler.add_job(
-        partial(generate_daily_report, application),
-        CronTrigger(hour=15, minute=30, timezone=SAUDI_TIMEZONE)
+        generate_daily_report,
+        CronTrigger(hour=15, minute=30, timezone=SAUDI_TIMEZONE),
+        args=[application.context]
     )
     scheduler.add_job(
-        partial(generate_weekly_report, application),
-        CronTrigger(day_of_week='sun', hour=16, timezone=SAUDI_TIMEZONE)
+        generate_weekly_report,
+        CronTrigger(day_of_week='sun', hour=16, timezone=SAUDI_TIMEZONE),
+        args=[application.context]
     )
 
-# ------------------ Main Application ------------------
-def main():
+async def main():
     application = Application.builder().token(TOKEN).build()
     
-    # Handlers
+    # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("settings", settings_menu))
     application.add_handler(CallbackQueryHandler(button_handler))
     
-    # Scheduler
+    # Scheduler setup
     scheduler = AsyncIOScheduler(timezone=SAUDI_TIMEZONE)
     schedule_jobs(scheduler, application)
     scheduler.start()
     
-    # Webhook
-    application.run_webhook(
+    # Run webhook
+    await application.run_webhook(
         listen="0.0.0.0",
         port=int(os.environ.get('PORT', 5000)),
         webhook_url=WEBHOOK_URL,
@@ -587,4 +591,4 @@ def main():
     )
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
