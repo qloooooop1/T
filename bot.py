@@ -5,7 +5,7 @@ import re
 import random
 
 # إعدادات بيئية
-TOKEN = os.getenv('TOKEN', 'YOUR_BOT_TOKEN_HERE')
+TOKEN = os.getenv('TOKEN', '7812533121:AAFyxg2EeeB4WqFpHecR1gdGUdg9Or7Evlk')
 MUTE_OR_BAN = os.getenv('MUTE_OR_BAN', 'mute').lower() == 'mute'
 BANNED_WORDS = ['سبام', 'إعلان', 'جولة', 'واتساب', 'تليجرام', 'فيسبوك', 'تويتر']
 MUTE_MESSAGE = "تم كتم @{user} بسبب: {reason} 😴🙊"
