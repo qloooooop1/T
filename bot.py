@@ -1,11 +1,11 @@
 import os
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes
-from telegram import Update
+from telegram import Update, ChatPermissions
 import re
 import random
 
 # إعدادات بيئية
-TOKEN = os.getenv('TOKEN', '7812533121:AAFyxg2EeeB4WqFpHecR1gdGUdg9Or7Evlk')
+TOKEN = '7812533121:AAFyxg2EeeB4WqFpHecR1gdGUdg9Or7Evlk'
 MUTE_OR_BAN = os.getenv('MUTE_OR_BAN', 'mute').lower() == 'mute'
 BANNED_WORDS = ['سبام', 'إعلان', 'جولة', 'واتساب', 'تليجرام', 'فيسبوك', 'تويتر']
 MUTE_MESSAGE = "تم كتم @{user} بسبب: {reason} 😴🙊"
@@ -22,21 +22,34 @@ SARCASTIC_REMARKS = [
 ]
 
 def is_spam(message):
-    # تحقق من وجود كلمات ممنوعة أو أرقام جوالات أو روابط
+    # تحقق من وجود كلمات ممنوعة
     if any(word in message.lower() for word in BANNED_WORDS):
         return True
-    # أرقام جوالات عامة
-    if re.search(r'\+\d{1,3}?[-.\s]?\(?\d{1,3}?\)?[-.\s]?\d{1,4}[-.\s]?\d{1,4}[-.\s]?\d{1,9}', message):
+    
+    # كشف عن الأرقام السعودية والأجنبية
+    # أرقام سعودية (05xxxxxxx, 05x-xxxxxxx, 05xxxxxxx, 5xxxxxxx, 5x-xxxxxxx)
+    saudi_numbers = r'(05|5)\d{8}'
+    # أرقام أجنبية (تشمل الرمز الدولي مع أو بدون +، مع أو بدون فاصلة أو نقطة أو وصلة)
+    international_numbers = r'(\+\d{1,3}\s?[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3,4}[-.\s]?\d{4}'
+    
+    if re.search(f'{saudi_numbers}|{international_numbers}', message):
         return True
-    # أرقام محددة (9 أو 10 أرقام)
-    if re.search(r'(05|503|056|56|50|050)\d{7,8}', message):
+    
+    # كشف عن الروابط
+    urls = r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
+    if re.search(urls, message):
         return True
-    # روابط
-    if re.search(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', message):
+    
+    # كشف عن قنوات ومجموعات تليجرام
+    telegram_channels = r'@|t\.me'
+    if re.search(telegram_channels, message):
         return True
-    # قنوات ومجموعات تليجرام
-    if re.search(r'@|t\.me', message):
+    
+    # كشف عن WhatsApp (بما في ذلك wa.me)
+    whatsapp = r'wa\.me|\bwhatsapp\.com\b'
+    if re.search(whatsapp, message):
         return True
+    
     return False
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -51,7 +64,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if (await context.bot.get_chat_member(chat_id, context.bot.id)).can_delete_messages:
             reason = 'إرسال إعلانات أو أرقام جوالات أو روابط غير مسموح بها'
             if MUTE_OR_BAN:
-                await context.bot.restrict_chat_member(chat_id, user.id, can_send_messages=False)
+                # استخدام ChatPermissions لتحديد صلاحيات المستخدم
+                await context.bot.restrict_chat_member(chat_id, user.id, 
+                                                       permissions=ChatPermissions(can_send_messages=False))
                 message_template = MUTE_MESSAGE
                 action = 'كتم'
             else:
