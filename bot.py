@@ -1,5 +1,5 @@
 import os
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes
 from telegram import Update
 import re
 import random
@@ -32,53 +32,51 @@ def is_spam(message):
         return True
     return False
 
-def start(update: Update, context: CallbackContext):
-    update.message.reply_text('مرحبًا! أنا بوت لمكافحة السبام بطريقة ساخرة. 📢🙃')
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text('مرحبًا! أنا بوت لمكافحة السبام بطريقة ساخرة. 📢🙃')
 
-def handle_message(update: Update, context: CallbackContext):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message.text
     chat_id = update.message.chat_id
     user = update.message.from_user
 
     if is_spam(message):
-        if update.message.chat.get_member(context.bot.id).can_restrict_members:
+        if (await context.bot.get_chat_member(chat_id, context.bot.id)).can_restrict_members:
             reason = 'إرسال إعلانات أو أرقام جوالات أو روابط غير مسموح بها'
             if MUTE_OR_BAN:
-                context.bot.restrict_chat_member(chat_id, user.id, can_send_messages=False)
+                await context.bot.restrict_chat_member(chat_id, user.id, can_send_messages=False)
                 message_template = MUTE_MESSAGE
             else:
-                context.bot.kick_chat_member(chat_id, user.id)
+                await context.bot.ban_chat_member(chat_id, user.id)
                 message_template = BAN_MESSAGE
 
             # إرسال رسالة الكتم أو الطرد مع سخرية
             sarcastic_remark = random.choice(SARCASTIC_REMARKS).format(user=f"@{user.username}", reason=reason)
-            context.bot.send_message(
+            await context.bot.send_message(
                 chat_id, 
                 f"{message_template.format(user=user.username, reason=reason)}\n\n{sarcastic_remark}"
             )
             
             # سخرية إضافية
-            context.bot.send_message(
+            await context.bot.send_message(
                 chat_id, 
                 f"حسنًا، {user.username}، لنرى إذا كنت تستطيع إرسال شيء أكثر إبداعًا في المرة القادمة! 🎨"
             )
         else:
-            context.bot.send_message(chat_id, "ليس لدي صلاحيات للكتم أو الطرد في هذه المجموعة! 🔒")
+            await context.bot.send_message(chat_id, "ليس لدي صلاحيات للكتم أو الطرد في هذه المجموعة! 🔒")
         
         try:
-            context.bot.delete_message(chat_id, update.message.message_id)
+            await context.bot.delete_message(chat_id, update.message.message_id)
         except:
             pass
 
 def main():
-    updater = Updater(TOKEN, use_context=True)
-    dp = updater.dispatcher
+    application = Application.builder().token(TOKEN).build()
+    
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(~filters.COMMAND & filters.TEXT, handle_message))
 
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-
-    updater.start_polling()
-    updater.idle()
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
     main()
