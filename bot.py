@@ -25,11 +25,17 @@ def is_spam(message):
     # تحقق من وجود كلمات ممنوعة أو أرقام جوالات أو روابط
     if any(word in message.lower() for word in BANNED_WORDS):
         return True
-    if re.search(r'\b\d{3,}[-,.\s]?\d{3,}[-,.\s]?\d{4,}\b', message):  # أرقام جوالات
+    # أرقام جوالات عامة
+    if re.search(r'\+\d{1,3}?[-.\s]?\(?\d{1,3}?\)?[-.\s]?\d{1,4}[-.\s]?\d{1,4}[-.\s]?\d{1,9}', message):
         return True
-    if re.search(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', message):  # روابط
+    # أرقام محددة (9 أو 10 أرقام)
+    if re.search(r'(05|503|056|56|50|050)\d{7,8}', message):
         return True
-    if re.search(r'@|t\.me', message):  # قنوات ومجموعات تليجرام
+    # روابط
+    if re.search(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', message):
+        return True
+    # قنوات ومجموعات تليجرام
+    if re.search(r'@|t\.me', message):
         return True
     return False
 
@@ -42,7 +48,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
 
     if is_spam(message):
-        if (await context.bot.get_chat_member(chat_id, context.bot.id)).can_restrict_members:
+        if (await context.bot.get_chat_member(chat_id, context.bot.id)).can_delete_messages:
             reason = 'إرسال إعلانات أو أرقام جوالات أو روابط غير مسموح بها'
             if MUTE_OR_BAN:
                 await context.bot.restrict_chat_member(chat_id, user.id, can_send_messages=False)
@@ -59,18 +65,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id, 
                 f"{message_template.format(user=user.username, reason=reason)}\n\n{sarcastic_remark}\n\nوهكذا، {user.username}، تم {action}ك بسبب {reason}، لكن لا يهم، لقد أضفت قليلاً من الضحك على حسابك هنا! 😂"
             )
+            
+            try:
+                await context.bot.delete_message(chat_id, update.message.message_id)
+            except Exception as e:
+                print(f"فشل في حذف الرسالة: {e}")
         else:
-            await context.bot.send_message(chat_id, "ليس لدي صلاحيات للكتم أو الطرد في هذه المجموعة! 🔒")
-        
-        try:
-            await context.bot.delete_message(chat_id, update.message.message_id)
-        except:
-            pass
+            await context.bot.send_message(chat_id, "ليس لدي صلاحيات لحذف الرسائل أو للكتم أو الطرد في هذه المجموعة! 🔒")
 
 def main():
     application = Application.builder().token(TOKEN).build()
     
-    # تصحيح الاستيراد لـ filters
     from telegram.ext import filters
     
     application.add_handler(CommandHandler("start", start))
