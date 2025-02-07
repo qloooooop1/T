@@ -14,13 +14,8 @@ from sqlalchemy import create_engine, Column, Integer, String, JSON, DateTime, B
 from sqlalchemy.orm import declarative_base, sessionmaker
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-import requests
-from bs4 import BeautifulSoup
 import arabic_reshaper
 from bidi.algorithm import get_display
-import psycopg2
-import json
-from functools import partial
 
 # ------------------ Configuration ------------------
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
@@ -28,7 +23,6 @@ WEBHOOK_URL = os.environ.get('WEBHOOK_URL') + "/" + TOKEN
 SAUDI_TIMEZONE = pytz.timezone('Asia/Riyadh')
 TRADING_HOURS = {'start': (9, 30), 'end': (15, 0)}
 STOCK_SYMBOLS = ['1211', '2222', '3030', '4200']
-NEWS_URL = "https://www.argaam.com/ar"
 
 DATABASE_URL = os.environ.get('DATABASE_URL').replace("postgres://", "postgresql://", 1)
 
@@ -122,6 +116,7 @@ def update_stock_data(symbol):
             stock = session.query(StockData).filter_by(symbol=symbol).first() or StockData(symbol=symbol)
             stock.data = data.to_json()
             
+            # Calculate technical indicators
             data['MA50'] = data['Close'].rolling(50).mean()
             data['MA200'] = data['Close'].rolling(200).mean()
             data['RSI'] = calculate_rsi(data)
@@ -174,12 +169,15 @@ async def check_opportunities(app: Application):
             data = pd.read_json(stock.data)
             tech = stock.technicals
             
+            # Golden Cross Strategy
             if tech['trend'] == 'صاعد' and data['MA50'].iloc[-2] < data['MA200'].iloc[-2]:
                 create_opportunity(session, symbol, 'golden_cross', data)
                 
+            # RSI Divergence Strategy
             if tech['rsi'] < 30 and data['Close'].iloc[-1] < data['Close'].iloc[-2]:
                 create_opportunity(session, symbol, 'rsi_divergence', data)
                 
+            # Volume Spike Strategy
             if tech['volume'] > (data['Volume'].mean() * 2):
                 create_opportunity(session, symbol, 'volume_spike', data)
                 
@@ -423,7 +421,8 @@ async def send_report(app, groups, report):
         try:
             await app.bot.send_message(
                 chat_id=group.chat_id,
-                text=report
+                text=report,
+                parse_mode=ParseMode.MARKDOWN
             )
         except Exception as e:
             logging.error(f"Error sending report: {e}")
@@ -438,13 +437,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """)
     
     keyboard = [
-        [InlineKeyboardButton("الإعدادات ⚙️", callback_data='settings')],
-        [InlineKeyboardButton("الدعم الفني 💬", url='t.me/your_support')]
+        [InlineKeyboardButton(arabic_text("الإعدادات ⚙️"), callback_data='settings_menu')],
+        [InlineKeyboardButton(arabic_text("الدعم الفني 💬"), url='t.me/your_support')]
     ]
     
     await update.message.reply_text(
         welcome_msg,
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode=ParseMode.MARKDOWN
     )
 
 async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -455,17 +455,24 @@ async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = Session()
     try:
         group = session.query(GroupSettings).filter_by(chat_id=str(update.effective_chat.id)).first()
+        if not group:
+            group = GroupSettings(chat_id=str(update.effective_chat.id))
+            session.add(group)
+            session.commit()
         
         keyboard = [
-            [InlineKeyboardButton("إدارة التقارير 📊", callback_data='report_settings')],
-            [InlineKeyboardButton("إدارة الاستراتيجيات 🛠️", callback_data='strategy_settings')],
-            [InlineKeyboardButton("إغلاق ❌", callback_data='close_settings')]
+            [InlineKeyboardButton(arabic_text("إدارة التقارير 📊"), callback_data='report_settings')],
+            [InlineKeyboardButton(arabic_text("إدارة الاستراتيجيات 🛠️"), callback_data='strategy_settings')],
+            [InlineKeyboardButton(arabic_text("إغلاق ❌"), callback_data='close_settings')]
         ]
         
         await update.message.reply_text(
             arabic_text("⚙️ لوحة التحكم الرئيسية:"),
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.MARKDOWN
         )
+    except Exception as e:
+        logging.error(f"Error in settings_menu: {e}")
     finally:
         session.close()
 
@@ -475,185 +482,144 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     session = Session()
     try:
-        group = session.query(GroupSettings).filter_by(chat_id=str(query.message.chat.id)).first()
-        
-        if query.data == 'settings':
+        if query.data == 'settings_menu':
             await settings_menu(update, context)
         elif query.data == 'report_settings':
-            await handle_report_settings(query, group)
+            await handle_report_settings(query)
         elif query.data == 'strategy_settings':
-            await handle_strategy_settings(query, group)
-        elif query.data.startswith('toggle_'):
-            await toggle_setting(query, group)
+            await handle_strategy_settings(query)
         elif query.data == 'close_settings':
             await query.delete_message()
-            
+    except Exception as e:
+        logging.error(f"Button handler error: {e}")
     finally:
         session.close()
 
-async def handle_report_settings(query, group):
-    keyboard = [
-        [InlineKeyboardButton(f"التقارير الساعية {'✅' if group.settings['reports']['hourly'] else '❌'}",
-                            callback_data='toggle_reports_hourly')],
-        [InlineKeyboardButton(f"التقارير اليومية {'✅' if group.settings['reports']['daily'] else '❌'}",
-                            callback_data='toggle_reports_daily')],
-        [InlineKeyboardButton(f"التقارير الأسبوعية {'✅' if group.settings['reports']['weekly'] else '❌'}",
-                            callback_data='toggle_reports_weekly')],
-        [InlineKeyboardButton("العودة ←", callback_data='settings')]
-    ]
-    await query.edit_message_text(
-        arabic_text("⚙️ إعدادات التقارير:"),
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-async def handle_strategy_settings(query, group):
-    keyboard = [
-        [InlineKeyboardButton(f"التقاطع الذهبي {'✅' if group.settings['strategies']['golden_cross'] else '❌'}",
-                            callback_data='toggle_golden_cross')],
-        [InlineKeyboardButton(f"الانفراج RSI {'✅' if group.settings['strategies']['rsi_divergence'] else '❌'}",
-                            callback_data='toggle_rsi_divergence')],
-        [InlineKeyboardButton(f"زيادة الحجم {'✅' if group.settings['strategies']['volume_spike'] else '❌'}",
-                            callback_data='toggle_volume_spike')],
-        [InlineKeyboardButton("العودة ←", callback_data='settings')]
-    ]
-    await query.edit_message_text(
-        arabic_text("⚙️ إعدادات الاستراتيجيات:"),
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-async def toggle_setting(query, group):
-    setting_map = {
-        'toggle_reports_hourly': ('reports', 'hourly'),
-        'toggle_reports_daily': ('reports', 'daily'),
-        'toggle_reports_weekly': ('reports', 'weekly'),
-        'toggle_golden_cross': ('strategies', 'golden_cross'),
-        'toggle_rsi_divergence': ('strategies', 'rsi_divergence'),
-        'toggle_volume_spike': ('strategies', 'volume_spike')
-    }
-    
-    category, setting = setting_map[query.data]
-    group.settings[category][setting] = not group.settings[category][setting]
+async def handle_report_settings(query):
     session = Session()
     try:
-        session.add(group)
-        session.commit()
-        await query.answer(f"تم {'تفعيل' if group.settings[category][setting] else 'تعطيل'} الإعداد")
+        group = session.query(GroupSettings).filter_by(chat_id=str(query.message.chat.id)).first()
+        settings = group.settings['reports']
+        
+        keyboard = [
+            [InlineKeyboardButton(
+                arabic_text(f"التقارير الساعية {'✅' if settings['hourly'] else '❌'}"), 
+                callback_data='toggle_hourly'
+            )],
+            [InlineKeyboardButton(
+                arabic_text(f"التقارير اليومية {'✅' if settings['daily'] else '❌'}"), 
+                callback_data='toggle_daily'
+            )],
+            [InlineKeyboardButton(
+                arabic_text(f"التقارير الأسبوعية {'✅' if settings['weekly'] else '❌'}"), 
+                callback_data='toggle_weekly'
+            )],
+            [InlineKeyboardButton(arabic_text("العودة ←"), callback_data='settings_menu')]
+        ]
+        
+        await query.edit_message_text(
+            arabic_text("⚙️ إعدادات التقارير:"),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.MARKDOWN
+        )
     finally:
         session.close()
 
-# ------------------ Scheduler Setup ------------------
-def schedule_jobs(scheduler, app):
-    scheduler.add_job(
-        check_opportunities,
-        'interval',
-        minutes=15,
-        args=[app],
-        timezone=SAUDI_TIMEZONE
-    )
-    scheduler.add_job(
-        track_targets,
-        'interval',
-        minutes=5,
-        args=[app],
-        timezone=SAUDI_TIMEZONE
-    )
-    scheduler.add_job(
-        generate_hourly_report,
-        CronTrigger(minute=0, timezone=SAUDI_TIMEZONE),
-        args=[app]
-    )
-    scheduler.add_job(
-        generate_daily_report,
-        CronTrigger(hour=15, minute=30, timezone=SAUDI_TIMEZONE),
-        args=[app]
-    )
-    scheduler.add_job(
-        generate_weekly_report,
-        CronTrigger(day_of_week='sun', hour=16, timezone=SAUDI_TIMEZONE),
-        args=[app]
-    )
-
-async def shutdown(scheduler, app):
+async def handle_strategy_settings(query):
+    session = Session()
     try:
-        if scheduler and scheduler.running:
-            scheduler.shutdown(wait=False)
-            logging.info("Scheduler stopped successfully")
-    except Exception as e:
-        logging.error(f"Error stopping scheduler: {e}")
-    
-    try:
-        if app:
-            if app.updater and app.updater.running:
-                await app.updater.stop()
-                logging.info("Updater stopped successfully")
-            await app.stop()
-            await app.shutdown()
-            logging.info("Application stopped successfully")
-    except Exception as e:
-        logging.error(f"Error stopping application: {e}")
-    
-    try:
-        if engine:
-            engine.dispose()
-            logging.info("Database connections closed")
-    except Exception as e:
-        logging.error(f"Error disposing engine: {e}")
-    
-    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-    for task in tasks:
-        task.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
-
-async def main():
-    application = None
-    scheduler = None
-    
-    try:
-        application = Application.builder().token(TOKEN).build()
+        group = session.query(GroupSettings).filter_by(chat_id=str(query.message.chat.id)).first()
+        settings = group.settings['strategies']
         
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("settings", settings_menu))
-        application.add_handler(CallbackQueryHandler(button_handler))
+        keyboard = [
+            [InlineKeyboardButton(
+                arabic_text(f"التقاطع الذهبي {'✅' if settings['golden_cross'] else '❌'}"), 
+                callback_data='toggle_golden'
+            )],
+            [InlineKeyboardButton(
+                arabic_text(f"الانفراج RSI {'✅' if settings['rsi_divergence'] else '❌'}"), 
+                callback_data='toggle_rsi'
+            )],
+            [InlineKeyboardButton(
+                arabic_text(f"زيادة الحجم {'✅' if settings['volume_spike'] else '❌'}"), 
+                callback_data='toggle_volume'
+            )],
+            [InlineKeyboardButton(arabic_text("العودة ←"), callback_data='settings_menu')]
+        ]
         
-        scheduler = AsyncIOScheduler(timezone=SAUDI_TIMEZONE)
-        schedule_jobs(scheduler, application)
-        scheduler.start()
-        
-        loop = asyncio.get_running_loop()
-        for signame in ('SIGINT', 'SIGTERM'):
-            loop.add_signal_handler(
-                getattr(signal, signame),
-                lambda: asyncio.create_task(shutdown(scheduler, application))
-            )
-        
-        await application.initialize()
-        await application.start()
-        await application.updater.start_webhook(
-            listen="0.0.0.0",
-            port=int(os.environ.get('PORT', 5000)),
-            url_path=TOKEN,
-            webhook_url=WEBHOOK_URL,
-            secret_token='WEBHOOK_SECRET'
+        await query.edit_message_text(
+            arabic_text("⚙️ إعدادات الاستراتيجيات:"),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.MARKDOWN
         )
-        
-        logging.info("Bot started successfully")
-        while True:
-            await asyncio.sleep(3600)
-            
-    except asyncio.CancelledError:
-        pass
-    except Exception as e:
-        logging.error(f"Main error: {e}")
     finally:
-        await shutdown(scheduler, application)
+        session.close()
 
-if __name__ == "__main__":
+async def toggle_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    session = Session()
+    try:
+        group = session.query(GroupSettings).filter_by(chat_id=str(query.message.chat.id)).first()
+        setting_map = {
+            'toggle_hourly': ('reports', 'hourly'),
+            'toggle_daily': ('reports', 'daily'),
+            'toggle_weekly': ('reports', 'weekly'),
+            'toggle_golden': ('strategies', 'golden_cross'),
+            'toggle_rsi': ('strategies', 'rsi_divergence'),
+            'toggle_volume': ('strategies', 'volume_spike')
+        }
+        
+        category, setting = setting_map[query.data]
+        group.settings[category][setting] = not group.settings[category][setting]
+        session.commit()
+        
+        if 'report' in category:
+            await handle_report_settings(query)
+        else:
+            await handle_strategy_settings(query)
+            
+    except Exception as e:
+        logging.error(f"Toggle error: {e}")
+    finally:
+        session.close()
+
+# ------------------ Scheduler & Main ------------------
+async def main():
+    application = Application.builder().token(TOKEN).build()
+    
+    # Register handlers
+    application.add_handler(CommandHandler('start', start))
+    application.add_handler(CallbackQueryHandler(button_handler, pattern='^settings_menu$|^report_settings$|^strategy_settings$|^close_settings$'))
+    application.add_handler(CallbackQueryHandler(toggle_setting, pattern='^toggle_'))
+    
+    # Initialize scheduler
+    scheduler = AsyncIOScheduler(timezone=SAUDI_TIMEZONE)
+    scheduler.add_job(check_opportunities, 'interval', minutes=15, args=[application])
+    scheduler.add_job(track_targets, 'interval', minutes=5, args=[application])
+    scheduler.add_job(generate_hourly_report, CronTrigger(minute=0), args=[application])
+    scheduler.add_job(generate_daily_report, CronTrigger(hour=15, minute=30), args=[application])
+    scheduler.add_job(generate_weekly_report, CronTrigger(day_of_week='sun', hour=16), args=[application])
+    scheduler.start()
+    
+    # Start webhook
+    await application.initialize()
+    await application.start()
+    await application.updater.start_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get('PORT', 5000)),
+        url_path=TOKEN,
+        webhook_url=WEBHOOK_URL,
+        secret_token='WEBHOOK_SECRET'
+    )
+    
+    logging.info("Bot is running...")
+    await asyncio.Event().wait()
+
+if __name__ == '__main__':
     logging.basicConfig(
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.INFO
     )
-    
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    asyncio.run(main())
