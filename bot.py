@@ -542,30 +542,30 @@ def schedule_jobs(scheduler, application):
         check_opportunities,
         'interval',
         minutes=15,
-        args=[application.context],
+        args=[application.job_queue],
         timezone=SAUDI_TIMEZONE
     )
     scheduler.add_job(
         track_targets,
         'interval',
         minutes=5,
-        args=[application.context],
+        args=[application.job_queue],
         timezone=SAUDI_TIMEZONE
     )
     scheduler.add_job(
         generate_hourly_report,
         CronTrigger(minute=0, timezone=SAUDI_TIMEZONE),
-        args=[application.context]
+        args=[application.job_queue]
     )
     scheduler.add_job(
         generate_daily_report,
         CronTrigger(hour=15, minute=30, timezone=SAUDI_TIMEZONE),
-        args=[application.context]
+        args=[application.job_queue]
     )
     scheduler.add_job(
         generate_weekly_report,
         CronTrigger(day_of_week='sun', hour=16, timezone=SAUDI_TIMEZONE),
-        args=[application.context]
+        args=[application.job_queue]
     )
 
 async def main():
