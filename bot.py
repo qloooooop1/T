@@ -574,16 +574,30 @@ def schedule_jobs(scheduler, app):
     )
 
 async def shutdown(scheduler, app):
-    if scheduler.running:
-        scheduler.shutdown()
+    try:
+        if scheduler and scheduler.running:
+            scheduler.shutdown(wait=False)
+            logging.info("Scheduler stopped successfully")
+    except Exception as e:
+        logging.error(f"Error stopping scheduler: {e}")
     
-    if app:
-        await app.stop()
-        await app.shutdown()
-        if app.updater:
-            await app.updater.stop()
+    try:
+        if app:
+            if app.updater and app.updater.running:
+                await app.updater.stop()
+                logging.info("Updater stopped successfully")
+            await app.stop()
+            await app.shutdown()
+            logging.info("Application stopped successfully")
+    except Exception as e:
+        logging.error(f"Error stopping application: {e}")
     
-    engine.dispose()
+    try:
+        if engine:
+            engine.dispose()
+            logging.info("Database connections closed")
+    except Exception as e:
+        logging.error(f"Error disposing engine: {e}")
     
     tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
     for task in tasks:
@@ -596,6 +610,7 @@ async def main():
     
     try:
         application = Application.builder().token(TOKEN).build()
+        
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("settings", settings_menu))
         application.add_handler(CallbackQueryHandler(button_handler))
@@ -611,16 +626,24 @@ async def main():
                 lambda: asyncio.create_task(shutdown(scheduler, application))
             )
         
-        await application.run_webhook(
+        await application.initialize()
+        await application.start()
+        await application.updater.start_webhook(
             listen="0.0.0.0",
             port=int(os.environ.get('PORT', 5000)),
-            webhook_url=WEBHOOK_URL,
             url_path=TOKEN,
+            webhook_url=WEBHOOK_URL,
             secret_token='WEBHOOK_SECRET'
         )
-    
+        
+        logging.info("Bot started successfully")
+        while True:
+            await asyncio.sleep(3600)
+            
     except asyncio.CancelledError:
         pass
+    except Exception as e:
+        logging.error(f"Main error: {e}")
     finally:
         await shutdown(scheduler, application)
 
