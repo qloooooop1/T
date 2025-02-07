@@ -573,62 +573,63 @@ def schedule_jobs(scheduler, app):
         args=[app]
     )
 
-async def main():
-    # 初始化应用
-    application = Application.builder().token(TOKEN).build()
-    
-    # 添加处理程序
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("settings", settings_menu))
-    application.add_handler(CallbackQueryHandler(button_handler))
-    
-    # 初始化调度器
-    scheduler = AsyncIOScheduler(timezone=SAUDI_TIMEZONE)
-    schedule_jobs(scheduler, application)
-    
-    # 配置信号处理
-    loop = asyncio.get_event_loop()
-    for signame in ('SIGINT', 'SIGTERM'):
-        loop.add_signal_handler(
-            getattr(signal, signame),
-            lambda: asyncio.create_task(shutdown(scheduler, application))
-        )
-
-    # 启动调度器
-    scheduler.start()
-    
-    # 启动Webhook
-    await application.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get('PORT', 5000)),
-        webhook_url=WEBHOOK_URL,
-        url_path=TOKEN,
-        secret_token='WEBHOOK_SECRET'
-    )
-
 async def shutdown(scheduler, app):
-    # 关闭调度器
-    scheduler.shutdown()
+    if scheduler.running:
+        scheduler.shutdown()
     
-    # 关闭应用
-    await app.stop()
-    await app.shutdown()
+    if app:
+        await app.stop()
+        await app.shutdown()
+        if app.updater:
+            await app.updater.stop()
     
-    # 关闭数据库连接
     engine.dispose()
     
-    # 停止事件循环
-    loop = asyncio.get_event_loop()
-    loop.stop()
+    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+async def main():
+    application = None
+    scheduler = None
+    
+    try:
+        application = Application.builder().token(TOKEN).build()
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("settings", settings_menu))
+        application.add_handler(CallbackQueryHandler(button_handler))
+        
+        scheduler = AsyncIOScheduler(timezone=SAUDI_TIMEZONE)
+        schedule_jobs(scheduler, application)
+        scheduler.start()
+        
+        loop = asyncio.get_running_loop()
+        for signame in ('SIGINT', 'SIGTERM'):
+            loop.add_signal_handler(
+                getattr(signal, signame),
+                lambda: asyncio.create_task(shutdown(scheduler, application))
+            )
+        
+        await application.run_webhook(
+            listen="0.0.0.0",
+            port=int(os.environ.get('PORT', 5000)),
+            webhook_url=WEBHOOK_URL,
+            url_path=TOKEN,
+            secret_token='WEBHOOK_SECRET'
+        )
+    
+    except asyncio.CancelledError:
+        pass
+    finally:
+        await shutdown(scheduler, application)
 
 if __name__ == "__main__":
-    # 配置日志
     logging.basicConfig(
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         level=logging.INFO
     )
     
-    # 运行主程序
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
