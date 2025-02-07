@@ -569,6 +569,9 @@ def schedule_jobs(scheduler, application):
     )
 
 async def main():
+    # Create an event loop for asyncio
+    loop = asyncio.get_event_loop()
+    
     application = Application.builder().token(TOKEN).build()
     
     # Add handlers
@@ -581,14 +584,22 @@ async def main():
     schedule_jobs(scheduler, application)
     scheduler.start()
     
-    # Run webhook
-    await application.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get('PORT', 5000)),
-        webhook_url=WEBHOOK_URL,
-        url_path=TOKEN,
-        secret_token='WEBHOOK_SECRET'
-    )
+    # Run the application
+    try:
+        await application.run_webhook(
+            listen="0.0.0.0",
+            port=int(os.environ.get('PORT', 5000)),
+            webhook_url=WEBHOOK_URL,
+            url_path=TOKEN,
+            secret_token='WEBHOOK_SECRET'
+        )
+    finally:
+        # Ensure proper shutdown of the application
+        if application.running:
+            await application.shutdown()
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
+        loop.stop()
 
 if __name__ == "__main__":
     asyncio.run(main())
