@@ -586,6 +586,8 @@ async def main():
     
     # Run the application
     try:
+        await application.initialize()
+        await application.start()
         await application.run_webhook(
             listen="0.0.0.0",
             port=int(os.environ.get('PORT', 5000)),
@@ -598,8 +600,9 @@ async def main():
         if application.running:
             await application.shutdown()
         if scheduler.running:
-            scheduler.shutdown(wait=False)
-        loop.stop()
+            await scheduler.shutdown(wait=False)
+        await loop.shutdown_asyncgens()
+        loop.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
