@@ -3,6 +3,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, ContextTyp
 from telegram import Update, ChatPermissions
 import re
 import random
+import asyncio
 
 # إعدادات بيئية
 TOKEN = '7812533121:AAFyxg2EeeB4WqFpHecR1gdGUdg9Or7Evlk'
@@ -11,7 +12,7 @@ BANNED_WORDS = ['سبام', 'إعلان', 'جولة', 'واتساب', 'تليج�
 MUTE_MESSAGE = "تم كتم @{user} بسبب: {reason} 😴🙊"
 BAN_MESSAGE = "تم طرد @{user} بسبب: {reason} 🚀👋"
 
-# قائمة بالسخريات الممكنة مع إضافة سخرية جديدة
+# قائمة بالسخريات الممكنة مع إضافة السخريات الجديدة
 SARCASTIC_REMARKS = [
     "آه، {user}، لقد كانت رسالة سبام مبهرة، شكرًا للتسلية! 🎉",
     "أوه، {user}، لقد فاتنا عرض رائع... في قمامة السبام! 🗑️",
@@ -19,6 +20,11 @@ SARCASTIC_REMARKS = [
     "أعتقد أننا قد نحتاج إلى درس في كيفية السبام الفعال، {user}! 📚",
     "لقد كانت هذه رسالة سبام مثالية، {user}، لو كان هناك جائزة للسبام! 🏆",
     "{user}، هل تعتقد أن السبام هو مهنة جانبية؟ لقد فقدت وظيفتك الآن! 💼🤣",
+    "تم اصتياد ابو سكيلف {user}، كما تصتاد الفقمه البطريق! 🎣",
+    "انا تعلت ياترند {user}، انت وعدتني انك سوف تعود، انا انتظرك! ⏳",
+    "تذكر عزيزي المتداول البسيط {user}، ان ترند افضل شخص في جنوب شرق افريقيا! 🌍",
+    "ترند وبس والباقي خس، {user}! 💨",
+    "تم اصتياد ابو سبام {user}! 🎉"
 ]
 
 def is_spam(message):
@@ -75,8 +81,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 action = 'طرد'
 
             # إرسال رسالة الكتم أو الطرد مع سخرية
-            sarcastic_remark = random.choice(SARCASTIC_REMARKS).format(user=f"@{user.username}", reason=reason)
-            await context.bot.send_message(
+            sarcastic_remark = random.choice(SARCASTIC_REMARKS).format(user=f"@{user.username}")
+            bot_message = await context.bot.send_message(
                 chat_id, 
                 f"{message_template.format(user=user.username, reason=reason)}\n\n{sarcastic_remark}\n\nوهكذا، {user.username}، تم {action}ك بسبب {reason}، لكن لا يهم، لقد أضفت قليلاً من الضحك على حسابك هنا! 😂"
             )
@@ -85,6 +91,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.delete_message(chat_id, update.message.message_id)
             except Exception as e:
                 print(f"فشل في حذف الرسالة: {e}")
+
+            # حذف رسالة البوت بعد 2 دقيقة
+            await asyncio.sleep(120)  # 2 دقيقة = 120 ثانية
+            try:
+                await context.bot.delete_message(chat_id, bot_message.message_id)
+            except Exception as e:
+                print(f"فشل في حذف رسالة البوت: {e}")
         else:
             await context.bot.send_message(chat_id, "ليس لدي صلاحيات لحذف الرسائل أو للكتم أو الطرد في هذه المجموعة! 🔒")
 
