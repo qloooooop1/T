@@ -1,8 +1,6 @@
 import os
-import re
 import logging
 import asyncio
-import signal
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -14,8 +12,6 @@ from sqlalchemy import create_engine, Column, Integer, String, JSON, DateTime, B
 from sqlalchemy.orm import declarative_base, sessionmaker
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-import arabic_reshaper
-from bidi.algorithm import get_display
 from telegram.constants import ParseMode
 
 # ------------------ Configuration ------------------
@@ -98,10 +94,6 @@ class PendingApproval(Base):  # نموذج جديد لطلبات الموافق�
 Base.metadata.create_all(engine)
 
 # ------------------ Utility Functions ------------------
-def arabic_text(text):
-    reshaped = arabic_reshaper.reshape(text)
-    return get_display(reshaped)
-
 async def delete_message(context, chat_id, message_id):
     try:
         await context.bot.delete_message(chat_id, message_id)
@@ -137,7 +129,7 @@ def update_stock_data(symbol):
             data['MACD'] = calculate_macd(data)
             
             stock.technicals = {
-                'trend': 'صاعد' if data['MA50'].iloc[-1] > data['MA200'].iloc[-1] else 'هابط',
+                'trend': 'up' if data['MA50'].iloc[-1] > data['MA200'].iloc[-1] else 'down',
                 'support': data['Low'].min(),
                 'resistance': data['High'].max(),
                 'rsi': data['RSI'].iloc[-1],
@@ -184,7 +176,7 @@ async def check_opportunities(app: Application):
             tech = stock.technicals
             
             # Golden Cross Strategy
-            if tech['trend'] == 'صاعد' and data['MA50'].iloc[-2] < data['MA200'].iloc[-2]:
+            if tech['trend'] == 'up' and data['MA50'].iloc[-2] < data['MA200'].iloc[-2]:
                 create_opportunity(session, symbol, 'golden_cross', data)
                 
             # RSI Divergence Strategy
@@ -247,11 +239,11 @@ async def update_opportunity_target(app, opp, current_price):
         opp.current_target += 1
         opp.updated_at = get_saudi_time()
         
-        alert_msg = arabic_text(f"""
-        🎯 تم تحقيق الهدف {opp.current_target} لـ {opp.symbol}
-        الاستراتيجية: {opp.strategy}
-        السعر الحالي: {current_price:.2f}
-        """)
+        alert_msg = f"""
+        🎯 Target {opp.current_target} achieved for {opp.symbol}
+        Strategy: {opp.strategy}
+        Current Price: {current_price:.2f}
+        """
         
         groups = session.query(GroupSettings).all()
         for group in groups:
@@ -276,10 +268,10 @@ async def close_opportunity(app, opp, status):
         opp.status = status
         session.commit()
         
-        status_msg = arabic_text(f"""
-        🏁 إنتهاء الفرصة لـ {opp.symbol}
-        الحالة: {'مكتملة' if status == 'completed' else 'متوقفة'}
-        """)
+        status_msg = f"""
+        🏁 Opportunity closed for {opp.symbol}
+        Status: {'completed' if status == 'completed' else 'stopped'}
+        """
         
         await app.bot.send_message(
             chat_id=opp.message_id,
@@ -304,10 +296,10 @@ async def create_new_targets(app, opp):
         session.add(new_opp)
         session.commit()
         
-        message = arabic_text(f"""
-        🚀 فرصة متابعة جديدة لـ {opp.symbol}
-        الأهداف الجديدة: {', '.join(map(str, new_targets))}
-        """)
+        message = f"""
+        🚀 New follow-up opportunity for {opp.symbol}
+        New targets: {', '.join(map(str, new_targets))}
+        """
         
         await app.bot.send_message(
             chat_id=opp.message_id,
@@ -360,11 +352,11 @@ async def calculate_top_movers(session, period):
     top5 = movers[:5]
     bottom5 = movers[-5:]
     
-    report = arabic_text(f"📊 تقرير {period}:\n")
-    report += arabic_text("\n🏆 أعلى 5 شركات:\n") + "\n".join(
+    report = f"📊 {period.capitalize()} Report:\n"
+    report += "\n🏆 Top 5 Companies:\n" + "\n".join(
         [f"{i+1}. {sym}: {chg:.2f}%" for i, (sym, chg) in enumerate(top5)]
     )
-    report += arabic_text("\n\n🔻 أقل 5 شركات:\n") + "\n".join(
+    report += "\n\n🔻 Bottom 5 Companies:\n" + "\n".join(
         [f"{i+1}. {sym}: {chg:.2f}%" for i, (sym, chg) in enumerate(bottom5)]
     )
     return report
@@ -384,17 +376,17 @@ async def calculate_price_analysis(session):
     gainers = sorted(analysis, key=lambda x: x['change'], reverse=True)[:5]
     losers = sorted(analysis, key=lambda x: x['change'])[:5]
     
-    report = arabic_text("📈 التقرير اليومي:\n")
-    report += arabic_text("\n📈 أعلى 5 شركات:\n") + "\n".join(
+    report = "📈 Daily Report:\n"
+    report += "\n📈 Top 5 Companies:\n" + "\n".join(
         [f"{i+1}. {item['symbol']}: {item['change']:.2f}%" for i, item in enumerate(gainers)]
     )
-    report += arabic_text("\n\n📉 أقل 5 شركات:\n") + "\n".join(
+    report += "\n\n📉 Bottom 5 Companies:\n" + "\n".join(
         [f"{i+1}. {item['symbol']}: {item['change']:.2f}%" for i, item in enumerate(losers)]
     )
     
     total_gainers = len([x for x in analysis if x['change'] > 0])
     total_losers = len([x for x in analysis if x['change'] < 0])
-    report += arabic_text(f"\n\n📊 الإجمالي:\nالرابحون: {total_gainers}\nالخاسرون: {total_losers}")
+    report += f"\n\n📊 Total:\nGainers: {total_gainers}\nLosers: {total_losers}"
     
     return report
 
@@ -406,7 +398,7 @@ async def calculate_volume_analysis(session):
         volumes.append((symbol, data['Volume'].iloc[-1]))
     
     volumes.sort(key=lambda x: x[1], reverse=True)
-    report = arabic_text("\n📊 تحليل الحجم:\n") + "\n".join(
+    report = "\n📊 Volume Analysis:\n" + "\n".join(
         [f"{i+1}. {sym}: {vol:,}" for i, (sym, vol) in enumerate(volumes[:5])]
     )
     return report
@@ -421,11 +413,11 @@ async def calculate_weekly_analysis(session):
         analysis.append((symbol, change))
     
     analysis.sort(key=lambda x: x[1], reverse=True)
-    report = arabic_text("📅 التقرير الأسبوعي:\n")
-    report += arabic_text("\n🏆 أعلى 5 شركات:\n") + "\n".join(
+    report = "📅 Weekly Report:\n"
+    report += "\n🏆 Top 5 Companies:\n" + "\n".join(
         [f"{i+1}. {sym}: {chg:.2f}%" for i, (sym, chg) in enumerate(analysis[:5])]
     )
-    report += arabic_text("\n\n🔻 أقل 5 شركات:\n") + "\n".join(
+    report += "\n\n🔻 Bottom 5 Companies:\n" + "\n".join(
         [f"{i+1}. {sym}: {chg:.2f}%" for i, (sym, chg) in enumerate(analysis[-5:])]
     )
     return report
@@ -443,16 +435,16 @@ async def send_report(app, groups, report):
 
 # ------------------ Main Handlers ------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    welcome_msg = arabic_text("""
-    مرحباً بك في بوت الراصد السعودي المتقدم!
+    welcome_msg = """
+    Welcome to the Advanced Saudi Stock Bot!
     --------------------------
-    /settings - لوحة التحكم الشاملة
-    /report - إنشاء تقرير فوري
-    """)
+    /settings - Control Panel
+    /report - Generate Instant Report
+    """
     
     keyboard = [
-        [InlineKeyboardButton(arabic_text("الإعدادات ⚙️"), callback_data='settings_menu')],
-        [InlineKeyboardButton(arabic_text("الدعم الفني 💬"), url='t.me/your_support')]
+        [InlineKeyboardButton("Settings ⚙️", callback_data='settings_menu')],
+        [InlineKeyboardButton("Support 💬", url='t.me/your_support')]
     ]
     
     await update.message.reply_text(
@@ -480,21 +472,21 @@ async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # Notify owner
             approve_button = InlineKeyboardButton(
-                text="✅ الموافقة", 
+                text="✅ Approve", 
                 callback_data=f"approve_{req.id}"
             )
             deny_button = InlineKeyboardButton(
-                text="❌ الرفض", 
+                text="❌ Deny", 
                 callback_data=f"deny_{req.id}"
             )
             
             await context.bot.send_message(
                 chat_id=OWNER_ID,
-                text=f"طلب وصول إلى الإعدادات من المستخدم: {user_id}\nالوقت: {req.created_at}",
+                text=f"Access request from user: {user_id}\nTime: {req.created_at}",
                 reply_markup=InlineKeyboardMarkup([[approve_button, deny_button]])
             )
             
-            await update.message.reply_text(arabic_text("📬 تم إرسال طلبك إلى المالك للموافقة"))
+            await update.message.reply_text("📬 Your request has been sent to the owner for approval.")
             return
         finally:
             session.close()
@@ -542,15 +534,15 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await context.bot.send_message(
                 chat_id=req.chat_id,
-                text=arabic_text("✅ تمت الموافقة على طلبك")
+                text="✅ Your request has been approved."
             )
         else:
             await context.bot.send_message(
                 chat_id=req.chat_id,
-                text=arabic_text("❌ تم رفض طلبك")
+                text="❌ Your request has been denied."
             )
             
-        await query.edit_message_text(f"تمت معالجة الطلب: {action}")
+        await query.edit_message_text(f"Request handled: {action}")
         
     except Exception as e:
         logging.error(f"Approval error: {e}")
