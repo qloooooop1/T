@@ -1,589 +1,384 @@
 import os
 import logging
 import asyncio
+import re
 import pandas as pd
 import numpy as np
 import yfinance as yf
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    MessageHandler,
+    filters
+)
 from datetime import datetime, timedelta
 import pytz
-from sqlalchemy import create_engine, Column, Integer, String, JSON, DateTime, Boolean, Float, Text
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy import create_engine, Column, Integer, String, JSON, DateTime, Boolean, Float, Text, ForeignKey
+from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+from sqlalchemy.exc import SQLAlchemyError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from telegram.constants import ParseMode
+from typing import Dict, Any
 
-# ------------------ Configuration ------------------
+# ------------------ Advanced Configuration ------------------
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-WEBHOOK_URL = os.environ.get('WEBHOOK_URL') + "/" + TOKEN
+WEBHOOK_URL = f"{os.environ.get('WEBHOOK_URL')}/{TOKEN}"
 SAUDI_TIMEZONE = pytz.timezone('Asia/Riyadh')
-TRADING_HOURS = {'start': (9, 30), 'end': (15, 0)}
-STOCK_SYMBOLS = ['1211', '2222', '3030', '4200']
-OWNER_ID = int(os.environ.get('OWNER_ID', 0))  # إضافة متغير المالك
+STOCK_SYMBOLS = ['1211.SR', '2222.SR', '3030.SR', '4200.SR']
+OWNER_ID = int(os.environ.get('OWNER_ID', 0))
+DATABASE_URL = os.environ.get('DATABASE_URL').replace("postgres://", "postgresql+psycopg2://", 1)
 
-DATABASE_URL = os.environ.get('DATABASE_URL').replace("postgres://", "postgresql://", 1)
-
-# Initialize database
+# ------------------ Database Initialization ------------------
 Base = declarative_base()
-engine = create_engine(DATABASE_URL, pool_size=20, max_overflow=0)
+engine = create_engine(DATABASE_URL, pool_size=20, max_overflow=0, pool_pre_ping=True)
 Session = sessionmaker(bind=engine)
 
-# ------------------ Database Models ------------------
 class GroupSettings(Base):
     __tablename__ = 'group_settings'
     id = Column(Integer, primary_key=True)
-    chat_id = Column(String)
+    chat_id = Column(String(50), unique=True)
     settings = Column(JSON, default={
-        'reports': {
-            'hourly': True,
-            'daily': True,
-            'weekly': True,
-            'include_losses': True
-        },
+        'reports': {'hourly': True, 'daily': True, 'weekly': True},
         'strategies': {
             'golden_cross': True,
-            'rsi_divergence': False,
+            'rsi_divergence': True,
             'macd_crossover': True,
-            'volume_spike': True
+            'bollinger_breakout': False
         },
         'protection': {
             'delete_phones': True,
             'delete_links': True,
-            'punishment': 'delete',
-            'mute_duration': 1
+            'anti_spam': True,
+            'mute_duration': 24
         },
         'notifications': {
             'price_alerts': True,
-            'volume_alerts': True,
+            'volume_spike': True,
             'news_alerts': True
         }
     })
+    approvals = relationship("PendingApproval", back_populates="group")
+
+class PendingApproval(Base):
+    __tablename__ = 'pending_approvals'
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(50))
+    chat_id = Column(String(50), ForeignKey('group_settings.chat_id'))
+    command = Column(String(100))
+    created_at = Column(DateTime)
+    handled = Column(Boolean, default=False)
+    group = relationship("GroupSettings", back_populates="approvals")
 
 class StockData(Base):
     __tablename__ = 'stock_data'
-    symbol = Column(String(4), primary_key=True)
+    symbol = Column(String(10), primary_key=True)
     data = Column(JSON)
-    technicals = Column(JSON)
+    indicators = Column(JSON)
     last_updated = Column(DateTime)
 
-class Opportunity(Base):
-    __tablename__ = 'opportunities'
+class TradingOpportunity(Base):
+    __tablename__ = 'trading_opportunities'
     id = Column(Integer, primary_key=True)
-    symbol = Column(String(4))
-    strategy = Column(String)
+    symbol = Column(String(10))
+    strategy = Column(String(50))
     entry_price = Column(Float)
     targets = Column(JSON)
     stop_loss = Column(Float)
-    stop_profit = Column(Float)
-    current_target = Column(Integer, default=0)
-    status = Column(String, default='active')
+    risk_reward = Column(Float)
+    status = Column(String(20), default='active')
     message_id = Column(Integer)
     created_at = Column(DateTime)
     updated_at = Column(DateTime)
 
-class PendingApproval(Base):  # نموذج جديد لطلبات الموافقة
-    __tablename__ = 'pending_approvals'
-    id = Column(Integer, primary_key=True)
-    user_id = Column(String)
-    chat_id = Column(String)
-    command = Column(String)
-    created_at = Column(DateTime)
-    handled = Column(Boolean, default=False)
-
 Base.metadata.create_all(engine)
 
-# ------------------ Utility Functions ------------------
-async def delete_message(context, chat_id, message_id):
-    try:
-        await context.bot.delete_message(chat_id, message_id)
-    except Exception as e:
-        logging.error(f"Error deleting message: {e}")
+# ------------------ Advanced Technical Analysis Engine ------------------
+class AdvancedTA:
+    @staticmethod
+    def calculate_rsi(data: pd.DataFrame, period=14) -> pd.Series:
+        delta = data['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
 
-def get_saudi_time():
-    return datetime.now(SAUDI_TIMEZONE)
+    @staticmethod
+    def calculate_macd(data: pd.DataFrame, fast=12, slow=26, signal=9) -> Dict[str, pd.Series]:
+        ema_fast = data['Close'].ewm(span=fast, adjust=False).mean()
+        ema_slow = data['Close'].ewm(span=slow, adjust=False).mean()
+        macd = ema_fast - ema_slow
+        signal_line = macd.ewm(span=signal, adjust=False).mean()
+        return {'macd': macd, 'signal': signal_line, 'histogram': macd - signal_line}
 
-async def is_admin(update: Update):
-    chat = update.effective_chat
-    if chat.type == 'private':
-        return True
-    admins = await chat.get_administrators()
-    return update.effective_user.id in [admin.user.id for admin in admins]
+    @staticmethod
+    def bollinger_bands(data: pd.DataFrame, window=20, num_std=2) -> Dict[str, pd.Series]:
+        sma = data['Close'].rolling(window=window).mean()
+        std = data['Close'].rolling(window=window).std()
+        return {
+            'upper': sma + (std * num_std),
+            'middle': sma,
+            'lower': sma - (std * num_std)
+        }
 
-def is_owner(user_id):  # دالة التحقق من المالك
-    return user_id == OWNER_ID
+# ------------------ Core Bot Functionality ------------------
+class SaudiStockBot:
+    def __init__(self):
+        self.app = Application.builder().token(TOKEN).build()
+        self.scheduler = AsyncIOScheduler(timezone=SAUDI_TIMEZONE)
+        self.ta = AdvancedTA()
+        self.setup_handlers()
+        self.setup_scheduler()
 
-# ------------------ Data Management ------------------
-def update_stock_data(symbol):
-    try:
-        data = yf.download(f"{symbol}.SR", period="1y", interval="1d")
-        if not data.empty:
-            session = Session()
-            stock = session.query(StockData).filter_by(symbol=symbol).first() or StockData(symbol=symbol)
-            stock.data = data.to_json()
-            
-            # Calculate technical indicators
-            data['MA50'] = data['Close'].rolling(50).mean()
-            data['MA200'] = data['Close'].rolling(200).mean()
-            data['RSI'] = calculate_rsi(data)
-            data['MACD'] = calculate_macd(data)
-            
-            stock.technicals = {
-                'trend': 'صاعد' if data['MA50'].iloc[-1] > data['MA200'].iloc[-1] else 'هابط',
-                'support': data['Low'].min(),
-                'resistance': data['High'].max(),
-                'rsi': data['RSI'].iloc[-1],
-                'macd': data['MACD'].iloc[-1],
-                'volume': data['Volume'].iloc[-1]
-            }
-            
-            stock.last_updated = get_saudi_time()
-            session.add(stock)
-            session.commit()
-    except Exception as e:
-        logging.error(f"Error updating {symbol}: {e}")
-    finally:
-        session.close()
+    # ------------------ Database Operations ------------------
+    @staticmethod
+    def get_session():
+        return Session()
 
-def calculate_rsi(data, period=14):
-    delta = data['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).fillna(0)
-    loss = (-delta.where(delta < 0, 0)).fillna(0)
-    
-    avg_gain = gain.rolling(period).mean()
-    avg_loss = loss.rolling(period).mean()
-    
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+    # ------------------ Handler Setup ------------------
+    def setup_handlers(self):
+        self.app.add_handler(CommandHandler('start', self.start))
+        self.app.add_handler(CommandHandler('settings', self.settings_menu))
+        self.app.add_handler(CommandHandler('report', self.generate_report))
+        self.app.add_handler(CallbackQueryHandler(self.handle_button, pattern=r'^settings::|^approval::'))
+        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
 
-def calculate_macd(data, fast=12, slow=26, signal=9):
-    ema_fast = data['Close'].ewm(span=fast).mean()
-    ema_slow = data['Close'].ewm(span=slow).mean()
-    macd = ema_fast - ema_slow
-    signal_line = macd.ewm(span=signal).mean()
-    return macd - signal_line
+    # ------------------ Scheduler Setup ------------------
+    def setup_scheduler(self):
+        self.scheduler.add_job(self.update_market_data, 'interval', minutes=15)
+        self.scheduler.add_job(self.check_opportunities, 'interval', minutes=10)
+        self.scheduler.add_job(self.send_daily_report, CronTrigger(hour=15, minute=30, timezone=SAUDI_TIMEZONE))
 
-# ------------------ Opportunity System ------------------
-async def check_opportunities(app: Application):
-    session = Session()
-    try:
-        for symbol in STOCK_SYMBOLS:
-            stock = session.query(StockData).filter_by(symbol=symbol).first()
-            if not stock:
-                continue
-                
-            data = pd.read_json(stock.data)
-            tech = stock.technicals
-            
-            # Golden Cross Strategy
-            if tech['trend'] == 'صاعد' and data['MA50'].iloc[-2] < data['MA200'].iloc[-2]:
-                create_opportunity(session, symbol, 'golden_cross', data)
-                
-            # RSI Divergence Strategy
-            if tech['rsi'] < 30 and data['Close'].iloc[-1] < data['Close'].iloc[-2]:
-                create_opportunity(session, symbol, 'rsi_divergence', data)
-                
-            # Volume Spike Strategy
-            if tech['volume'] > (data['Volume'].mean() * 2):
-                create_opportunity(session, symbol, 'volume_spike', data)
-                
-            session.commit()
-    except Exception as e:
-        logging.error(f"Opportunity error: {e}")
-    finally:
-        session.close()
-
-def create_opportunity(session, symbol, strategy, data):
-    entry_price = data['Close'].iloc[-1]
-    targets = [entry_price * (1 + (i * 0.05)) for i in range(1, 5)]
-    stop_loss = data['Low'].iloc[-2]
-    
-    opp = Opportunity(
-        symbol=symbol,
-        strategy=strategy,
-        entry_price=entry_price,
-        targets=targets,
-        stop_loss=stop_loss,
-        stop_profit=entry_price * 0.98,
-        created_at=get_saudi_time()
-    )
-    session.add(opp)
-    return opp
-
-async def track_targets(app: Application):
-    session = Session()
-    try:
-        opportunities = session.query(Opportunity).filter_by(status='active').all()
-        for opp in opportunities:
-            stock = session.query(StockData).filter_by(symbol=opp.symbol).first()
-            data = pd.read_json(stock.data)
-            current_price = data['Close'].iloc[-1]
-            
-            if current_price >= opp.targets[opp.current_target]:
-                await update_opportunity_target(app, opp, current_price)
-                
-            elif current_price <= opp.stop_loss:
-                await close_opportunity(app, opp, 'متوقفة')
-                
-            elif current_price >= opp.stop_profit:
-                await update_stop_profit(app, opp)
-                
-    except Exception as e:
-        logging.error(f"Tracking error: {e}")
-    finally:
-        session.close()
-
-async def update_opportunity_target(app, opp, current_price):
-    session = Session()
-    try:
-        opp.current_target += 1
-        opp.updated_at = get_saudi_time()
-        
-        alert_msg = f"""
-        🎯 تم تحقيق الهدف {opp.current_target} لـ {opp.symbol}
-        الاستراتيجية: {opp.strategy}
-        السعر الحالي: {current_price:.2f}
-        """
-        
-        groups = session.query(GroupSettings).all()
-        for group in groups:
-            if group.settings['strategies'].get(opp.strategy, False):
-                await app.bot.send_message(
-                    chat_id=group.chat_id,
-                    text=alert_msg,
-                    reply_to_message_id=opp.message_id
-                )
-        
-        if opp.current_target >= len(opp.targets):
-            await close_opportunity(app, opp, 'مكتملة')
-            await create_new_targets(app, opp)
-            
-        session.commit()
-    finally:
-        session.close()
-
-async def close_opportunity(app, opp, status):
-    session = Session()
-    try:
-        opp.status = status
-        session.commit()
-        
-        status_msg = f"""
-        🏁 إنتهاء الفرصة لـ {opp.symbol}
-        الحالة: {status}
-        """
-        
-        await app.bot.send_message(
-            chat_id=opp.message_id,
-            text=status_msg,
-            reply_to_message_id=opp.message_id
+    # ------------------ Main Menu System ------------------
+    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        menu = [
+            [InlineKeyboardButton("⚙️ الإعدادات المتقدمة", callback_data='settings::main')],
+            [InlineKeyboardButton("📈 تقرير فوري", callback_data='report::instant')],
+            [InlineKeyboardButton("📢 الدعم الفني", url='t.me/support')]
+        ]
+        await update.message.reply_text(
+            "مرحبا بكم في البوت المتقدم لتحليل الأسهم السعودية",
+            reply_markup=InlineKeyboardMarkup(menu),
+            parse_mode=ParseMode.MARKDOWN
         )
-    finally:
-        session.close()
 
-async def create_new_targets(app, opp):
-    session = Session()
-    try:
-        new_targets = [opp.targets[-1] * (1 + (i * 0.03)) for i in range(1, 4)]
-        new_opp = Opportunity(
-            symbol=opp.symbol,
-            strategy=opp.strategy,
-            entry_price=opp.targets[-1],
-            targets=new_targets,
-            stop_loss=opp.stop_profit,
-            created_at=get_saudi_time()
-        )
-        session.add(new_opp)
-        session.commit()
-        
-        message = f"""
-        🚀 فرصة متابعة جديدة لـ {opp.symbol}
-        الأهداف الجديدة: {', '.join(map(str, new_targets))}
-        """
-        
-        await app.bot.send_message(
-            chat_id=opp.message_id,
-            text=message
-        )
-    finally:
-        session.close()
-
-# ------------------ Reporting System ------------------
-async def generate_hourly_report(app: Application):
-    session = Session()
-    try:
-        report = await calculate_top_movers(session, 'ساعة')
-        groups = session.query(GroupSettings).filter_by(settings__reports__hourly=True).all()
-        await send_report(app, groups, report)
-    finally:
-        session.close()
-
-async def generate_daily_report(app: Application):
-    session = Session()
-    try:
-        price_report = await calculate_price_analysis(session)
-        volume_report = await calculate_volume_analysis(session)
-        full_report = f"{price_report}\n\n{volume_report}"
-        groups = session.query(GroupSettings).filter_by(settings__reports__daily=True).all()
-        await send_report(app, groups, full_report)
-    finally:
-        session.close()
-
-async def generate_weekly_report(app: Application):
-    session = Session()
-    try:
-        weekly_report = await calculate_weekly_analysis(session)
-        opportunity_report = await calculate_opportunity_performance(session)
-        full_report = f"{weekly_report}\n\n{opportunity_report}"
-        groups = session.query(GroupSettings).filter_by(settings__reports__weekly=True).all()
-        await send_report(app, groups, full_report)
-    finally:
-        session.close()
-
-async def calculate_top_movers(session, period):
-    movers = []
-    for symbol in STOCK_SYMBOLS:
-        stock = session.query(StockData).filter_by(symbol=symbol).first()
-        data = pd.read_json(stock.data)
-        change = (data['Close'].iloc[-1] - data['Open'].iloc[-1]) / data['Open'].iloc[-1] * 100
-        movers.append((symbol, change))
-    
-    movers.sort(key=lambda x: x[1], reverse=True)
-    top5 = movers[:5]
-    bottom5 = movers[-5:]
-    
-    report = f"📊 تقرير {period}:\n"
-    report += "\n🏆 أعلى 5 شركات:\n" + "\n".join(
-        [f"{i+1}. {sym}: {chg:.2f}%" for i, (sym, chg) in enumerate(top5)]
-    )
-    report += "\n\n🔻 أقل 5 شركات:\n" + "\n".join(
-        [f"{i+1}. {sym}: {chg:.2f}%" for i, (sym, chg) in enumerate(bottom5)]
-    )
-    return report
-
-async def calculate_price_analysis(session):
-    analysis = []
-    for symbol in STOCK_SYMBOLS:
-        stock = session.query(StockData).filter_by(symbol=symbol).first()
-        data = pd.read_json(stock.data)
-        analysis.append({
-            'symbol': symbol,
-            'open': data['Open'].iloc[-1],
-            'close': data['Close'].iloc[-1],
-            'change': (data['Close'].iloc[-1] - data['Open'].iloc[-1]) / data['Open'].iloc[-1] * 100
-        })
-    
-    gainers = sorted(analysis, key=lambda x: x['change'], reverse=True)[:5]
-    losers = sorted(analysis, key=lambda x: x['change'])[:5]
-    
-    report = "📈 التقرير اليومي:\n"
-    report += "\n📈 أعلى 5 شركات:\n" + "\n".join(
-        [f"{i+1}. {item['symbol']}: {item['change']:.2f}%" for i, item in enumerate(gainers)]
-    )
-    report += "\n\n📉 أقل 5 شركات:\n" + "\n".join(
-        [f"{i+1}. {item['symbol']}: {item['change']:.2f}%" for i, item in enumerate(losers)]
-    )
-    
-    total_gainers = len([x for x in analysis if x['change'] > 0])
-    total_losers = len([x for x in analysis if x['change'] < 0])
-    report += f"\n\n📊 الإجمالي:\nالرابحون: {total_gainers}\nالخاسرون: {total_losers}"
-    
-    return report
-
-async def calculate_volume_analysis(session):
-    volumes = []
-    for symbol in STOCK_SYMBOLS:
-        stock = session.query(StockData).filter_by(symbol=symbol).first()
-        data = pd.read_json(stock.data)
-        volumes.append((symbol, data['Volume'].iloc[-1]))
-    
-    volumes.sort(key=lambda x: x[1], reverse=True)
-    report = "\n📊 تحليل الحجم:\n" + "\n".join(
-        [f"{i+1}. {sym}: {vol:,}" for i, (sym, vol) in enumerate(volumes[:5])]
-    )
-    return report
-
-async def calculate_weekly_analysis(session):
-    analysis = []
-    for symbol in STOCK_SYMBOLS:
-        stock = session.query(StockData).filter_by(symbol=symbol).first()
-        data = pd.read_json(stock.data)
-        weekly_data = data.resample('W').last()
-        change = (weekly_data['Close'].iloc[-1] - weekly_data['Open'].iloc[-1]) / weekly_data['Open'].iloc[-1] * 100
-        analysis.append((symbol, change))
-    
-    analysis.sort(key=lambda x: x[1], reverse=True)
-    report = "📅 التقرير الأسبوعي:\n"
-    report += "\n🏆 أعلى 5 شركات:\n" + "\n".join(
-        [f"{i+1}. {sym}: {chg:.2f}%" for i, (sym, chg) in enumerate(analysis[:5])]
-    )
-    report += "\n\n🔻 أقل 5 شركات:\n" + "\n".join(
-        [f"{i+1}. {sym}: {chg:.2f}%" for i, (sym, chg) in enumerate(analysis[-5:])]
-    )
-    return report
-
-async def send_report(app, groups, report):
-    for group in groups:
+    # ------------------ Advanced Settings System ------------------
+    async def settings_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        session = self.get_session()
         try:
-            await app.bot.send_message(
-                chat_id=group.chat_id,
-                text=report,
+            user_id = str(update.effective_user.id)
+            
+            if not await self.verify_ownership(user_id):
+                await self.handle_approval_request(update, session, user_id)
+                return
+
+            # Dynamic Settings Menu Generation
+            group = session.query(GroupSettings).filter_by(chat_id=str(update.effective_chat.id)).first()
+            settings = group.settings if group else {}
+
+            menu = self.generate_settings_menu(settings)
+            await update.message.reply_text(
+                "الإعدادات المتقدمة:",
+                reply_markup=InlineKeyboardMarkup(menu),
                 parse_mode=ParseMode.MARKDOWN
             )
+
         except Exception as e:
-            logging.error(f"Error sending report: {e}")
-
-# ------------------ Main Handlers ------------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    welcome_msg = """
-    مرحباً بك في بوت الراصد السعودي المتقدم!
-    --------------------------
-    /settings - لوحة التحكم الشاملة
-    /report - إنشاء تقرير فوري
-    """
-    
-    keyboard = [
-        [InlineKeyboardButton("الإعدادات ⚙️", callback_data='settings_menu')],
-        [InlineKeyboardButton("الدعم الفني 💬", url='t.me/your_support')]
-    ]
-    
-    await update.message.reply_text(
-        welcome_msg,
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-    
-    if not is_owner(user_id):  # التحقق من المالك
-        session = Session()
-        try:
-            # Save approval request
-            req = PendingApproval(
-                user_id=str(user_id),
-                chat_id=str(chat_id),
-                command='settings_menu',
-                created_at=get_saudi_time()
-            )
-            session.add(req)
-            session.commit()
-            
-            # Notify owner
-            approve_button = InlineKeyboardButton(
-                text="✅ الموافقة", 
-                callback_data=f"approve_{req.id}"
-            )
-            deny_button = InlineKeyboardButton(
-                text="❌ الرفض", 
-                callback_data=f"deny_{req.id}"
-            )
-            
-            await context.bot.send_message(
-                chat_id=OWNER_ID,
-                text=f"طلب وصول إلى الإعدادات من المستخدم: {user_id}\nالوقت: {req.created_at}",
-                reply_markup=InlineKeyboardMarkup([[approve_button, deny_button]])
-            )
-            
-            await update.message.reply_text("📬 تم إرسال طلبك إلى المالك للموافقة")
-            return
+            logging.error(f"Settings Error: {str(e)}")
+            await update.message.reply_text("حدث خطأ في تحميل الإعدادات")
         finally:
             session.close()
-    
-    # Rest of original settings_menu code here...
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    session = Session()
-    try:
-        if query.data == 'settings_menu':
-            await settings_menu(update, context)
-        elif query.data == 'report_settings':
-            await handle_report_settings(query)
-        elif query.data == 'strategy_settings':
-            await handle_strategy_settings(query)
-        elif query.data == 'close_settings':
-            await query.delete_message()
-    except Exception as e:
-        logging.error(f"Button handler error: {e}")
-    finally:
-        session.close()
+    def generate_settings_menu(self, settings: Dict[str, Any]) -> list:
+        menu = []
+        # Reports Section
+        menu.append([InlineKeyboardButton("📊 تقارير التداول", callback_data='settings::reports')])
+        # Strategies Section
+        menu.append([InlineKeyboardButton("🛠 استراتيجيات التداول", callback_data='settings::strategies')])
+        # Protection Section
+        menu.append([InlineKeyboardButton("🛡 إعدادات الحماية", callback_data='settings::protection')])
+        # Back Button
+        menu.append([InlineKeyboardButton("🔙 رجوع", callback_data='settings::main')])
+        return menu
 
-async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    action, req_id = query.data.split('_')
-    session = Session()
-    
-    try:
-        req = session.query(PendingApproval).get(int(req_id))
-        if not req or req.handled:
-            return
-        
-        req.handled = True
-        session.commit()
-        
-        if action == 'approve':
-            # Execute original command
-            if req.command == 'settings_menu':
-                await settings_menu(update, context)
-            
-            await context.bot.send_message(
-                chat_id=req.chat_id,
-                text="✅ تمت الموافقة على طلبك"
+    # ------------------ Approval System ------------------
+    async def handle_approval_request(self, update: Update, session: Session, user_id: str):
+        try:
+            new_request = PendingApproval(
+                user_id=user_id,
+                chat_id=str(update.effective_chat.id),
+                command='settings_access',
+                created_at=datetime.now(SAUDI_TIMEZONE)
             )
-        else:
-            await context.bot.send_message(
-                chat_id=req.chat_id,
-                text="❌ تم رفض طلبك"
+            session.add(new_request)
+            session.commit()
+
+            # Send approval request to owner
+            approve_btn = InlineKeyboardButton("✅ الموافقة", callback_data=f"approval::approve::{new_request.id}")
+            deny_btn = InlineKeyboardButton("❌ الرفض", callback_data=f"approval::deny::{new_request.id}")
+            
+            await self.app.bot.send_message(
+                chat_id=OWNER_ID,
+                text=f"طلب وصول جديد من المستخدم: {user_id}",
+                reply_markup=InlineKeyboardMarkup([[approve_btn, deny_btn]])
             )
             
-        await query.edit_message_text(f"تمت معالجة الطلب: {action}")
-        
-    except Exception as e:
-        logging.error(f"Approval error: {e}")
-    finally:
-        session.close()
+            await update.message.reply_text("📬 تم إرسال طلبك للإدارة للموافقة")
 
-# ------------------ Scheduler & Main ------------------
-async def main():
-    application = Application.builder().token(TOKEN).build()
-    
-    # Register handlers
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(CallbackQueryHandler(button_handler, pattern='^settings_menu$|^report_settings$|^strategy_settings$|^close_settings$'))
-    application.add_handler(CallbackQueryHandler(handle_approval, pattern='^approve_|^deny_'))  # إضافة handler للموافقة
-    
-    # Initialize scheduler
-    scheduler = AsyncIOScheduler(timezone=SAUDI_TIMEZONE)
-    scheduler.add_job(check_opportunities, 'interval', minutes=15, args=[application])
-    scheduler.add_job(track_targets, 'interval', minutes=5, args=[application])
-    scheduler.add_job(generate_hourly_report, CronTrigger(minute=0), args=[application])
-    scheduler.add_job(generate_daily_report, CronTrigger(hour=15, minute=30), args=[application])
-    scheduler.add_job(generate_weekly_report, CronTrigger(day_of_week='sun', hour=16), args=[application])
-    scheduler.start()
-    
-    # Start webhook
-    await application.initialize()
-    await application.start()
-    await application.updater.start_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get('PORT', 5000)),
-        url_path=TOKEN,
-        webhook_url=WEBHOOK_URL,
-        secret_token='WEBHOOK_SECRET'
-    )
-    
-    logging.info("Bot is running...")
-    await asyncio.Event().wait()
+        except SQLAlchemyError as e:
+            session.rollback()
+            logging.error(f"Database Error: {str(e)}")
+            await update.message.reply_text("حدث خطأ في نظام الموافقة")
+
+    # ------------------ Market Data Management ------------------
+    async def update_market_data(self):
+        session = self.get_session()
+        try:
+            for symbol in STOCK_SYMBOLS:
+                data = yf.download(symbol, period="1y", interval="1d")
+                if data.empty:
+                    continue
+
+                # Calculate advanced indicators
+                indicators = {
+                    'rsi': self.ta.calculate_rsi(data).iloc[-1],
+                    'macd': self.ta.calculate_macd(data),
+                    'bollinger': self.ta.bollinger_bands(data)
+                }
+
+                # Update database
+                stock = session.query(StockData).filter_by(symbol=symbol).first()
+                if not stock:
+                    stock = StockData(symbol=symbol)
+                
+                stock.data = data.to_json()
+                stock.indicators = indicators
+                stock.last_updated = datetime.now(SAUDI_TIMEZONE)
+                session.add(stock)
+            
+            session.commit()
+        except Exception as e:
+            logging.error(f"Market Data Error: {str(e)}")
+            session.rollback()
+        finally:
+            session.close()
+
+    # ------------------ Trading Opportunity Engine ------------------
+    async def check_opportunities(self):
+        session = self.get_session()
+        try:
+            for symbol in STOCK_SYMBOLS:
+                stock = session.query(StockData).filter_by(symbol=symbol).first()
+                if not stock:
+                    continue
+
+                data = pd.read_json(stock.data)
+                indicators = stock.indicators
+
+                # Golden Cross Detection
+                if self.detect_golden_cross(data):
+                    await self.create_opportunity(session, symbol, 'golden_cross', data)
+
+                # RSI Divergence Detection
+                if self.detect_rsi_divergence(indicators['rsi']):
+                    await self.create_opportunity(session, symbol, 'rsi_divergence', data)
+
+        except Exception as e:
+            logging.error(f"Opportunity Error: {str(e)}")
+        finally:
+            session.close()
+
+    def detect_golden_cross(self, data: pd.DataFrame) -> bool:
+        ma50 = data['Close'].rolling(50).mean()
+        ma200 = data['Close'].rolling(200).mean()
+        return (ma50.iloc[-2] < ma200.iloc[-2]) and (ma50.iloc[-1] > ma200.iloc[-1])
+
+    def detect_rsi_divergence(self, rsi_values: pd.Series) -> bool:
+        # Implement sophisticated RSI divergence detection
+        return (rsi_values.iloc[-1] < 30) and (rsi_values.iloc[-3] > rsi_values.iloc[-1])
+
+    # ------------------ Report Generation System ------------------
+    async def generate_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        session = self.get_session()
+        try:
+            # Generate comprehensive report
+            report = "📊 تقرير السوق الشامل:\n\n"
+            
+            # Add market summary
+            report += await self.generate_market_summary(session)
+            
+            # Add top opportunities
+            report += "\n\n🔥 أفضل الفرص الآن:\n"
+            report += await self.generate_opportunities_list(session)
+            
+            await update.message.reply_text(report, parse_mode=ParseMode.MARKDOWN)
+            
+        except Exception as e:
+            logging.error(f"Report Error: {str(e)}")
+            await update.message.reply_text("حدث خطأ في إنشاء التقرير")
+        finally:
+            session.close()
+
+    # ------------------ Protection System ------------------
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        session = self.get_session()
+        try:
+            message = update.message
+            group = session.query(GroupSettings).filter_by(chat_id=str(message.chat.id)).first()
+            
+            if group and group.settings['protection']['active']:
+                if self.detect_invalid_content(message.text):
+                    await self.apply_protection_measures(message, group)
+                    
+        except Exception as e:
+            logging.error(f"Protection Error: {str(e)}")
+        finally:
+            session.close()
+
+    def detect_invalid_content(self, text: str) -> bool:
+        phone_pattern = r'\+\d{10,}'
+        url_pattern = r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
+        return re.search(phone_pattern, text) or re.search(url_pattern, text)
+
+    async def apply_protection_measures(self, message, group):
+        try:
+            await message.delete()
+            
+            if group.settings['protection']['punishment'] == 'mute':
+                mute_duration = group.settings['protection']['mute_duration']
+                until_date = datetime.now() + timedelta(hours=mute_duration)
+                await self.app.bot.restrict_chat_member(
+                    chat_id=message.chat.id,
+                    user_id=message.from_user.id,
+                    until_date=until_date,
+                    permissions=ChatPermissions()
+                )
+                
+        except Exception as e:
+            logging.error(f"Protection Action Failed: {str(e)}")
+
+    # ------------------ System Core ------------------
+    async def run(self):
+        await self.app.initialize()
+        await self.app.start()
+        self.scheduler.start()
+        await self.app.updater.start_webhook(
+            listen="0.0.0.0",
+            port=int(os.environ.get('PORT', 5000)),
+            url_path=TOKEN,
+            webhook_url=WEBHOOK_URL,
+            secret_token='WEBHOOK_SECRET'
+        )
+        logging.info("Bot is running in production mode")
+        await asyncio.Event().wait()
 
 if __name__ == '__main__':
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.INFO
     )
-    asyncio.run(main())
+    bot = SaudiStockBot()
+    asyncio.run(bot.run())
