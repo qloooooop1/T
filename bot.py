@@ -9,18 +9,18 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from datetime import datetime, timedelta
 import pytz
-from sqlalchemy import create_engine, Column, Integer, String, JSON, DateTime, Boolean, Float, ForeignKey, Text
+from sqlalchemy import create_engine, Column, Integer, String, JSON, DateTime, Boolean, Float, ForeignKey
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from telegram.constants import ParseMode
 
-# ------------------ Configuration ------------------
+# Configuration
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
 SAUDI_TIMEZONE = pytz.timezone('Asia/Riyadh')
 STOCK_SYMBOLS = ['1211.SR', '2222.SR', '3030.SR', '4200.SR']
-OWNER_ID = int(os.environ.get('OWNER_ID'))
+OWNER_ID = int(os.environ.get('OWNER_ID', 0))
 DATABASE_URL = os.environ.get('DATABASE_URL').replace("postgres://", "postgresql://", 1)
 
 # Initialize database
@@ -28,7 +28,7 @@ Base = declarative_base()
 engine = create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
 
-# ------------------ Database Models ------------------
+# Database Models
 class Group(Base):
     __tablename__ = 'groups'
     id = Column(Integer, primary_key=True)
@@ -81,7 +81,7 @@ class SaudiStockBot:
         self.setup_handlers()
         self.setup_scheduler()
 
-    # ------------------ Handlers Setup ------------------
+    # Handlers Setup
     def setup_handlers(self):
         handlers = [
             CommandHandler('start', self.start),
@@ -92,7 +92,7 @@ class SaudiStockBot:
         for handler in handlers:
             self.app.add_handler(handler)
 
-    # ------------------ Scheduler Setup ------------------
+    # Scheduler Setup
     def setup_scheduler(self):
         self.scheduler.add_job(
             self.check_opportunities,
@@ -105,7 +105,7 @@ class SaudiStockBot:
             CronTrigger(hour=16, minute=0, timezone=SAUDI_TIMEZONE)
         )
 
-    # ------------------ Core Handlers ------------------
+    # Core Handlers
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             [InlineKeyboardButton("الإعدادات ⚙️", callback_data='settings'),
@@ -154,13 +154,14 @@ class SaudiStockBot:
         finally:
             session.close()
 
-    # ------------------ Opportunity System ------------------
+    # Opportunity System
     async def check_opportunities(self):
         session = Session()
         try:
             for symbol in STOCK_SYMBOLS:
                 data = yf.download(symbol, period='1d', interval='30m')
-                if len(data) < 50: continue
+                if len(data) < 50: 
+                    continue
 
                 # Golden Cross Strategy
                 if self.detect_golden_cross(data):
@@ -244,7 +245,7 @@ class SaudiStockBot:
         }
         return names.get(strategy, '')
 
-    # ------------------ Reporting System ------------------
+    # Reporting System
     async def send_daily_report(self):
         session = Session()
         try:
@@ -267,7 +268,7 @@ class SaudiStockBot:
         finally:
             session.close()
 
-    # ------------------ Subscription Management ------------------
+    # Subscription Management
     async def approve_group(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_user.id != OWNER_ID:
             return await update.message.reply_text("⛔ صلاحية مطلوبة!")
@@ -295,13 +296,13 @@ class SaudiStockBot:
         finally:
             session.close()
 
-    # ------------------ Button Handlers ------------------
+    # Button Handlers
     async def handle_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
         
         if query.data == 'settings':
-            await self.settings(update, context)
+            await self.settings(Update(update.message), context)
         elif query.data == 'edit_reports':
             await self.edit_reports(query)
         elif query.data == 'close':
@@ -334,7 +335,7 @@ class SaudiStockBot:
         finally:
             session.close()
 
-    # ------------------ Deployment Setup ------------------
+    # Deployment Setup
     async def run(self):
         await self.app.initialize()
         await self.app.start()
