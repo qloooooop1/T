@@ -2,11 +2,8 @@ import os
 import logging
 import asyncio
 import pandas as pd
-import numpy as np
-from pyalgotrade import strategy
-from pyalgotrade.barfeed import yahoofeed
-from pyalgotrade.technical import ma
-from pyalgotrade.technical import bollinger
+import pandas_ta as ta
+import yfinance as yf
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from datetime import datetime, timedelta
@@ -15,13 +12,14 @@ from sqlalchemy import create_engine, Column, Integer, String, JSON, DateTime, B
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from telegram.constants import ParseMode
 
-# Configuration
+# ------------------ Configuration ------------------
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
 SAUDI_TIMEZONE = pytz.timezone('Asia/Riyadh')
 STOCK_SYMBOLS = ['1211.SR', '2222.SR', '3030.SR', '4200.SR']
-OWNER_ID = int(os.environ.get('OWNER_ID', 0))
+OWNER_ID = int(os.environ.get('OWNER_ID'))
 DATABASE_URL = os.environ.get('DATABASE_URL').replace("postgres://", "postgresql://", 1)
 
 # Initialize database
@@ -29,7 +27,7 @@ Base = declarative_base()
 engine = create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
 
-# Database Models
+# ------------------ Database Models ------------------
 class Group(Base):
     __tablename__ = 'groups'
     id = Column(Integer, primary_key=True)
@@ -60,7 +58,6 @@ class Opportunity(Base):
     stop_loss = Column(Float)
     current_target = Column(Integer, default=0)
     status = Column(String, default='active')
-    message_id = Column(Integer)
     group_id = Column(Integer, ForeignKey('groups.id'))
     group = relationship('Group', back_populates='opportunities')
     created_at = Column(DateTime, default=lambda: datetime.now(SAUDI_TIMEZONE))
@@ -82,7 +79,7 @@ class SaudiStockBot:
         self.setup_handlers()
         self.setup_scheduler()
 
-    # Handlers Setup
+    # ------------------ Handlers Setup ------------------
     def setup_handlers(self):
         handlers = [
             CommandHandler('start', self.start),
@@ -93,7 +90,7 @@ class SaudiStockBot:
         for handler in handlers:
             self.app.add_handler(handler)
 
-    # Scheduler Setup
+    # ------------------ Scheduler Setup ------------------
     def setup_scheduler(self):
         self.scheduler.add_job(
             self.check_opportunities,
@@ -102,11 +99,11 @@ class SaudiStockBot:
             max_instances=3
         )
         self.scheduler.add_job(
-            self.send_daily_report,
+            self.send_reports,
             CronTrigger(hour=16, minute=0, timezone=SAUDI_TIMEZONE)
         )
 
-    # Core Handlers
+    # ------------------ Core Functionality ------------------
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             [InlineKeyboardButton("الإعدادات ⚙️", callback_data='settings'),
@@ -114,7 +111,7 @@ class SaudiStockBot:
             [InlineKeyboardButton("الدعم الفني 📞", url='t.me/support')]
         ]
         await update.message.reply_text(
-            "مرحبًا بك في بوت الأسهم السعودية المتقدم! 📈",
+            "مرحبًا بكم في بوت الأسهم السعودية المتقدم! 📈",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
@@ -155,13 +152,13 @@ class SaudiStockBot:
         finally:
             session.close()
 
-    # Opportunity System
+    # ------------------ Opportunity Detection ------------------
     async def check_opportunities(self):
         session = Session()
         try:
             for symbol in STOCK_SYMBOLS:
-                data = self.fetch_stock_data(symbol, '1d', '30m')  # Fetch with PyAlgoTrade
-                if len(data) < 50: 
+                data = yf.download(symbol, period='1d', interval='1h')
+                if data.empty:
                     continue
 
                 # Golden Cross Strategy
@@ -169,37 +166,48 @@ class SaudiStockBot:
                     await self.create_opportunity(symbol, 'golden', data)
                 
                 # Earthquake Strategy (Breakout)
-                if self.detect_breakout(data):
+                if self.detect_earthquake(data):
                     await self.create_opportunity(symbol, 'earthquake', data)
+                
+                # Volcano Strategy (Fibonacci)
+                if self.detect_volcano(data):
+                    await self.create_opportunity(symbol, 'volcano', data)
+                
+                # Lightning Strategy (Candlestick Pattern)
+                if self.detect_lightning(data):
+                    await self.create_opportunity(symbol, 'lightning', data)
+
         except Exception as e:
             logging.error(f"Opportunity Error: {str(e)}")
         finally:
             session.close()
 
-    def fetch_stock_data(self, symbol, period, interval):
-        # Mock data fetch. This would need to be implemented with PyAlgoTrade's datafeed
-        feed = yahoofeed.Feed()
-        feed.addBarsFromCSV(symbol, "path_to_your_csv_data.csv")
-        bars = []
-        for dateTime, bar in feed[symbol]:
-            bars.append([dateTime, bar.getOpen(), bar.getHigh(), bar.getLow(), bar.getClose(), bar.getVolume()])
-        return pd.DataFrame(bars, columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume'])
-
     def detect_golden_cross(self, data):
-        # Using PyAlgoTrade moving averages
-        short_ema = ma.EMA(data['Close'], 50)
-        long_ema = ma.EMA(data['Close'], 200)
-        return short_ema[-1] > long_ema[-1] and short_ema[-2] <= long_ema[-2]
+        ema50 = ta.ema(data['Close'], length=50)
+        ema200 = ta.ema(data['Close'], length=200)
+        return ema50.iloc[-1] > ema200.iloc[-1] and ema50.iloc[-2] <= ema200.iloc[-2]
 
-    def detect_breakout(self, data):
-        # Simple breakout strategy
-        return data['Close'].iloc[-1] > data['High'].rolling(14).max().iloc[-2]
+    def detect_earthquake(self, data):
+        return (data['Close'].iloc[-1] > data['High'].rolling(14).max().iloc[-2] and
+                data['Volume'].iloc[-1] > data['Volume'].mean() * 2)
 
+    def detect_volcano(self, data):
+        fib_levels = self.calculate_fibonacci(data)
+        return data['Close'].iloc[-1] > fib_levels['61.8%']
+
+    def detect_lightning(self, data):
+        patterns = ta.cdl_pattern(
+            data['Open'], data['High'], 
+            data['Low'], data['Close']
+        )
+        return any(patterns.iloc[-1] != 0)
+
+    # ------------------ Opportunity Management ------------------
     async def create_opportunity(self, symbol, strategy, data):
         session = Session()
         try:
             entry_price = data['Close'].iloc[-1]
-            stop_loss = data['Low'].iloc[-2] * 0.98
+            stop_loss = self.calculate_stop_loss(strategy, data)
             targets = self.calculate_targets(strategy, entry_price)
             
             opp = Opportunity(
@@ -207,13 +215,14 @@ class SaudiStockBot:
                 strategy=strategy,
                 entry_price=entry_price,
                 targets=targets,
-                stop_loss=stop_loss
+                stop_loss=stop_loss,
+                created_at=datetime.now(SAUDI_TIMEZONE)
             )
             
             session.add(opp)
             session.commit()
             
-            await self.send_alert(opp)
+            await self.send_alert_to_groups(opp)
         except Exception as e:
             logging.error(f"Create Opportunity Error: {str(e)}")
         finally:
@@ -222,11 +231,22 @@ class SaudiStockBot:
     def calculate_targets(self, strategy, entry):
         strategies = {
             'golden': [round(entry * (1 + i*0.05), 2) for i in range(1,5)],
-            'earthquake': [round(entry * (1 + i*0.08), 2) for i in range(1,3)]
+            'earthquake': [round(entry * (1 + i*0.08), 2) for i in range(1,3)],
+            'volcano': [round(entry * (1 + i*0.1), 2) for i in range(1,6)],
+            'lightning': [round(entry * (1 + i*0.07), 2) for i in range(1,3)]
         }
         return strategies.get(strategy, [])
 
-    async def send_alert(self, opportunity):
+    def calculate_stop_loss(self, strategy, data):
+        if strategy == 'golden':
+            return data['Low'].iloc[-2] * 0.98
+        elif strategy == 'earthquake':
+            return data['Close'].iloc[-1] * 0.95
+        else:
+            return data['Close'].iloc[-1] * 0.97
+
+    # ------------------ Alert System ------------------
+    async def send_alert_to_groups(self, opportunity):
         session = Session()
         try:
             groups = session.query(Group).filter(
@@ -235,7 +255,7 @@ class SaudiStockBot:
             ).all()
             
             text = (
-                f"🚨 فرصة {self.get_strategy_name(opportunity.strategy)} جديدة!\n"
+                f"🚨 إشارة {self.get_strategy_name(opportunity.strategy)}\n"
                 f"📈 السهم: {opportunity.symbol}\n"
                 f"💰 السعر: {opportunity.entry_price:.2f}\n"
                 f"🎯 الأهداف: {', '.join(map(str, opportunity.targets))}\n"
@@ -245,7 +265,8 @@ class SaudiStockBot:
             for group in groups:
                 await self.app.bot.send_message(
                     chat_id=group.chat_id,
-                    text=text
+                    text=text,
+                    parse_mode=ParseMode.HTML
                 )
         finally:
             session.close()
@@ -253,19 +274,25 @@ class SaudiStockBot:
     def get_strategy_name(self, strategy):
         names = {
             'golden': 'ذهبية 💰',
-            'earthquake': 'زلزالية 🌋'
+            'earthquake': 'زلزالية 🌋',
+            'volcano': 'بركانية 🌋',
+            'lightning': 'برقية ⚡'
         }
         return names.get(strategy, '')
 
-    # Reporting System
-    async def send_daily_report(self):
+    # ------------------ Reporting System ------------------
+    async def send_reports(self):
         session = Session()
         try:
+            # Daily Report
             report = "📊 التقرير اليومي:\n\n"
-            for symbol in STOCK_SYMBOLS:
-                data = self.fetch_stock_data(symbol, '1d', '1d')
-                change = ((data['Close'].iloc[-1] - data['Open'].iloc[0]) / data['Open'].iloc[0]) * 100
-                report += f"{symbol}: {change:.2f}%\n"
+            top_gainers = await self.get_top_movers('1d')
+            
+            report += "🏆 أعلى 5 شركات:\n"
+            report += "\n".join([f"{i+1}. {sym}: {chg}%" for i, (sym, chg) in enumerate(top_gainers[:5])])
+            
+            report += "\n\n🔻 أقل 5 شركات:\n"
+            report += "\n".join([f"{i+1}. {sym}: {chg}%" for i, (sym, chg) in enumerate(top_gainers[-5:])])
             
             groups = session.query(Group).filter(
                 Group.settings['reports']['daily'].as_boolean(),
@@ -280,7 +307,17 @@ class SaudiStockBot:
         finally:
             session.close()
 
-    # Subscription Management
+    async def get_top_movers(self, period):
+        movers = []
+        for symbol in STOCK_SYMBOLS:
+            data = yf.download(symbol, period=period)
+            if len(data) < 2:
+                continue
+            change = ((data['Close'].iloc[-1] - data['Open'].iloc[0]) / data['Open'].iloc[0]) * 100
+            movers.append((symbol, round(change, 2)))
+        return sorted(movers, key=lambda x: x[1], reverse=True)
+
+    # ------------------ Group Approval ------------------
     async def approve_group(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_user.id != OWNER_ID:
             return await update.message.reply_text("⛔ صلاحية مطلوبة!")
@@ -308,7 +345,7 @@ class SaudiStockBot:
         finally:
             session.close()
 
-    # Button Handlers
+    # ------------------ Button Handlers ------------------
     async def handle_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
@@ -347,7 +384,7 @@ class SaudiStockBot:
         finally:
             session.close()
 
-    # Deployment Setup
+    # ------------------ Run Bot ------------------
     async def run(self):
         await self.app.initialize()
         await self.app.start()
