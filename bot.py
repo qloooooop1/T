@@ -501,6 +501,25 @@ async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Rest of original settings_menu code here...
 
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    session = Session()
+    try:
+        if query.data == 'settings_menu':
+            await settings_menu(update, context)
+        elif query.data == 'report_settings':
+            await handle_report_settings(query)
+        elif query.data == 'strategy_settings':
+            await handle_strategy_settings(query)
+        elif query.data == 'close_settings':
+            await query.delete_message()
+    except Exception as e:
+        logging.error(f"Button handler error: {e}")
+    finally:
+        session.close()
+
 async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -545,7 +564,6 @@ async def main():
     # Register handlers
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CallbackQueryHandler(button_handler, pattern='^settings_menu$|^report_settings$|^strategy_settings$|^close_settings$'))
-    application.add_handler(CallbackQueryHandler(toggle_setting, pattern='^toggle_'))
     application.add_handler(CallbackQueryHandler(handle_approval, pattern='^approve_|^deny_'))  # إضافة handler للموافقة
     
     # Initialize scheduler
