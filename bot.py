@@ -14,17 +14,14 @@ from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from telegram.constants import ParseMode
-import requests
-from bs4 import BeautifulSoup
 
 # ------------------ Configuration ------------------
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-WEBHOOK_URL = os.environ.get('WEBHOOK_URL') + "/" + TOKEN
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
 SAUDI_TIMEZONE = pytz.timezone('Asia/Riyadh')
-STOCK_SYMBOLS = [s+'.SR' for s in ['1211', '2222', '3030', '4200']]
+STOCK_SYMBOLS = ['1211.SR', '2222.SR', '3030.SR', '4200.SR']
 OWNER_ID = int(os.environ.get('OWNER_ID'))
 DATABASE_URL = os.environ.get('DATABASE_URL').replace("postgres://", "postgresql://", 1)
-NEWS_API_KEY = os.environ.get('NEWS_API_KEY')
 
 # Initialize database
 Base = declarative_base()
@@ -62,27 +59,17 @@ class Opportunity(Base):
     stop_loss = Column(Float)
     current_target = Column(Integer, default=0)
     status = Column(String, default='active')
-    message_id = Column(Integer)
     group_id = Column(Integer, ForeignKey('groups.id'))
     group = relationship('Group', back_populates='opportunities')
-    created_at = Column(DateTime, default=datetime.now(SAUDI_TIMEZONE))
+    created_at = Column(DateTime, default=lambda: datetime.now(SAUDI_TIMEZONE))
 
 class ApprovalRequest(Base):
     __tablename__ = 'approval_requests'
     id = Column(Integer, primary_key=True)
     chat_id = Column(String)
     requester_id = Column(String)
-    requested_at = Column(DateTime)
+    requested_at = Column(DateTime, default=lambda: datetime.now(SAUDI_TIMEZONE))
     handled = Column(Boolean, default=False)
-    expires_at = Column(DateTime)
-
-class Subscription(Base):
-    __tablename__ = 'subscriptions'
-    id = Column(Integer, primary_key=True)
-    group_id = Column(Integer, ForeignKey('groups.id'))
-    start_date = Column(DateTime)
-    end_date = Column(DateTime)
-    is_active = Column(Boolean, default=True)
 
 Base.metadata.create_all(engine)
 
@@ -95,50 +82,87 @@ class SaudiStockBot:
 
     # ------------------ Handlers Setup ------------------
     def setup_handlers(self):
-        handlers = [
-            CommandHandler('start', self.start),
-            CommandHandler('settings', self.settings),
-            CommandHandler('approve', self.approve_group),
-            CallbackQueryHandler(self.handle_button, pattern=r'^settings_|^opportunity_|^approve_|^close_|^renew_|^target_')
-        ]
-        for handler in handlers:
-            self.app.add_handler(handler)
+        self.app.add_handler(CommandHandler('start', self.start))
+        self.app.add_handler(CommandHandler('settings', self.settings))
+        self.app.add_handler(CommandHandler('approve', self.approve_group))
+        self.app.add_handler(CallbackQueryHandler(self.handle_button))
 
     # ------------------ Scheduler Setup ------------------
     def setup_scheduler(self):
-        jobs = [
-            {'func': self.check_opportunities, 'trigger': 'interval', 'minutes': 5},
-            {'func': self.send_hourly_report, 'trigger': CronTrigger(minute=0)},
-            {'func': self.send_daily_report, 'trigger': CronTrigger(hour=15, minute=30)},
-            {'func': self.send_weekly_report, 'trigger': CronTrigger(day_of_week='sun', hour=16)},
-            {'func': self.check_subscriptions, 'trigger': 'interval', 'hours': 1},
-            {'func': self.price_alerts, 'trigger': 'interval', 'minutes': 3}
-        ]
-        for job in jobs:
-            self.scheduler.add_job(job['func'], job['trigger'])
+        self.scheduler.add_job(self.check_opportunities, 'interval', minutes=5)
+        self.scheduler.add_job(self.send_daily_report, CronTrigger(hour=16, minute=0))
 
-    # ------------------ Core Functionality ------------------
+    # ------------------ Core Handlers ------------------
+    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        keyboard = [
+            [InlineKeyboardButton("الإعدادات ⚙️", callback_data='settings'),
+             InlineKeyboardButton("التقارير 📊", callback_data='reports')],
+            [InlineKeyboardButton("الدعم الفني 📞", url='t.me/support')]
+        ]
+        await update.message.reply_text(
+            "مرحبًا بكم في بوت الأسهم السعودية المتقدم! 📈",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    async def settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        session = Session()
+        try:
+            chat_id = str(update.effective_chat.id)
+            group = session.query(Group).filter_by(chat_id=chat_id).first()
+            
+            if not group or not group.is_approved:
+                return await update.message.reply_text("⚠️ يلزم تفعيل المجموعة أولاً")
+            
+            settings_text = (
+                "⚙️ إعدادات المجموعة:\n\n"
+                f"📊 التقارير:\n"
+                f"- ساعية: {'✅' if group.settings['reports']['hourly'] else '❌'}\n"
+                f"- يومية: {'✅' if group.settings['reports']['daily'] else '❌'}\n"
+                f"- أسبوعية: {'✅' if group.settings['reports']['weekly'] else '❌'}\n\n"
+                f"🔍 الاستراتيجيات:\n"
+                f"- ذهبية: {'✅' if group.settings['strategies']['golden'] else '❌'}\n"
+                f"- زلزالية: {'✅' if group.settings['strategies']['earthquake'] else '❌'}\n"
+                f"- بركانية: {'✅' if group.settings['strategies']['volcano'] else '❌'}\n"
+                f"- برقية: {'✅' if group.settings['strategies']['lightning'] else '❌'}"
+            )
+
+            buttons = [
+                [InlineKeyboardButton("تعديل التقارير", callback_data='edit_reports'),
+                 InlineKeyboardButton("تعديل الاستراتيجيات", callback_data='edit_strategies')],
+                [InlineKeyboardButton("إغلاق", callback_data='close')]
+            ]
+            
+            await update.message.reply_text(
+                settings_text,
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
+        except Exception as e:
+            logging.error(f"Settings Error: {str(e)}")
+        finally:
+            session.close()
+
+    # ------------------ Opportunity Detection ------------------
     async def check_opportunities(self):
         session = Session()
         try:
             for symbol in STOCK_SYMBOLS:
-                data = yf.download(symbol, period='1d', interval='30m')
-                if len(data) < 50:
+                data = yf.download(symbol, period='1d', interval='1h')
+                if data.empty:
                     continue
 
-                # Golden Opportunity (EMA50/200 Cross)
-                if self.detect_golden_opportunity(data):
+                # Golden Cross Strategy
+                if self.detect_golden_cross(data):
                     await self.create_opportunity(symbol, 'golden', data)
-
-                # Earthquake Opportunity (Breakout)
+                
+                # Earthquake Strategy (Breakout)
                 if self.detect_earthquake(data):
                     await self.create_opportunity(symbol, 'earthquake', data)
-
-                # Volcano Opportunity (Fibonacci)
+                
+                # Volcano Strategy (Fibonacci)
                 if self.detect_volcano(data):
                     await self.create_opportunity(symbol, 'volcano', data)
-
-                # Lightning Opportunity (Chart Pattern)
+                
+                # Lightning Strategy (Candlestick Pattern)
                 if self.detect_lightning(data):
                     await self.create_opportunity(symbol, 'lightning', data)
 
@@ -147,250 +171,208 @@ class SaudiStockBot:
         finally:
             session.close()
 
-    # ------------------ Strategy Detectors ------------------
-    def detect_golden_opportunity(self, data):
+    def detect_golden_cross(self, data):
         ema50 = ta.ema(data['Close'], length=50)
         ema200 = ta.ema(data['Close'], length=200)
         return ema50.iloc[-1] > ema200.iloc[-1] and ema50.iloc[-2] <= ema200.iloc[-2]
 
     def detect_earthquake(self, data):
-        return (data['Close'].iloc[-1] > data['High'].rolling(14).max().iloc[-2] and 
-                data['Volume'].iloc[-1] > data['Volume'].rolling(20).mean().iloc[-1] * 2)
+        return (data['Close'].iloc[-1] > data['High'].rolling(14).max().iloc[-2] and
+                data['Volume'].iloc[-1] > data['Volume'].mean() * 2)
 
     def detect_volcano(self, data):
         fib_levels = self.calculate_fibonacci(data)
         return data['Close'].iloc[-1] > fib_levels['61.8%']
 
     def detect_lightning(self, data):
-        pattern = ta.cdl_pattern(data['Open'], data['High'], data['Low'], data['Close'])
-        return any(pattern.iloc[-1] != 0)
+        patterns = ta.cdl_pattern(
+            data['Open'], data['High'], 
+            data['Low'], data['Close']
+        )
+        return any(patterns.iloc[-1] != 0)
 
     # ------------------ Opportunity Management ------------------
-    def calculate_targets(self, strategy, entry):
-        strategies = {
-            'golden': [round(entry * (1 + i*0.05), 2) for i in range(1,5)],
-            'earthquake': [round(entry * (1 + i*0.08), 2) for i in range(1,4)],
-            'volcano': [round(entry * (1 + i*0.1), 2) for i in range(1,6)],
-            'lightning': [round(entry * (1 + i*0.07), 2) for i in range(1,3)]
-        }
-        return strategies[strategy]
-
     async def create_opportunity(self, symbol, strategy, data):
         session = Session()
         try:
-            entry = data['Close'].iloc[-1]
-            targets = self.calculate_targets(strategy, entry)
+            entry_price = data['Close'].iloc[-1]
             stop_loss = self.calculate_stop_loss(strategy, data)
-
+            targets = self.calculate_targets(strategy, entry_price)
+            
             opp = Opportunity(
                 symbol=symbol,
                 strategy=strategy,
-                entry_price=entry,
+                entry_price=entry_price,
                 targets=targets,
                 stop_loss=stop_loss,
                 created_at=datetime.now(SAUDI_TIMEZONE)
             )
-
+            
             session.add(opp)
             session.commit()
-
-            groups = session.query(Group).filter(
-                Group.settings['strategies'][strategy].as_boolean(),
-                Group.is_approved == True
-            ).all()
-
-            for group in groups:
-                await self.send_opportunity_alert(group, opp)
-
+            
+            await self.send_alert_to_groups(opp)
         except Exception as e:
             logging.error(f"Create Opportunity Error: {str(e)}")
         finally:
             session.close()
 
-    async def send_opportunity_alert(self, group, opportunity):
-        strategy_names = {
-            'golden': 'ذهبية 💰', 
+    def calculate_targets(self, strategy, entry):
+        strategies = {
+            'golden': [round(entry * (1 + i*0.05), 2) for i in range(1,5)],
+            'earthquake': [round(entry * (1 + i*0.08), 2) for i in range(1,3)],
+            'volcano': [round(entry * (1 + i*0.1), 2) for i in range(1,6)],
+            'lightning': [round(entry * (1 + i*0.07), 2) for i in range(1,3)]
+        }
+        return strategies.get(strategy, [])
+
+    def calculate_stop_loss(self, strategy, data):
+        if strategy == 'golden':
+            return data['Low'].iloc[-2] * 0.98
+        elif strategy == 'earthquake':
+            return data['Close'].iloc[-1] * 0.95
+        else:
+            return data['Close'].iloc[-1] * 0.97
+
+    # ------------------ Alert System ------------------
+    async def send_alert_to_groups(self, opportunity):
+        session = Session()
+        try:
+            groups = session.query(Group).filter(
+                Group.settings['strategies'][opportunity.strategy].as_boolean(),
+                Group.is_approved == True
+            ).all()
+            
+            text = (
+                f"🚨 إشارة {self.get_strategy_name(opportunity.strategy)}\n"
+                f"📈 السهم: {opportunity.symbol}\n"
+                f"💰 السعر: {opportunity.entry_price:.2f}\n"
+                f"🎯 الأهداف: {', '.join(map(str, opportunity.targets))}\n"
+                f"🛑 وقف الخسارة: {opportunity.stop_loss:.2f}"
+            )
+            
+            for group in groups:
+                await self.app.bot.send_message(
+                    chat_id=group.chat_id,
+                    text=text,
+                    parse_mode=ParseMode.HTML
+                )
+        finally:
+            session.close()
+
+    def get_strategy_name(self, strategy):
+        names = {
+            'golden': 'ذهبية 💰',
             'earthquake': 'زلزالية 🌋',
             'volcano': 'بركانية 🌋',
             'lightning': 'برقية ⚡'
         }
-
-        text = f"🚨 **فرصة {strategy_names[opportunity.strategy]}**\n"
-        text += f"📈 السهم: `{opportunity.symbol}`\n"
-        text += f"💰 السعر الحالي: {opportunity.entry_price:.2f}\n"
-        text += f"🎯 الأهداف: {', '.join(map(str, opportunity.targets))}\n"
-        text += f"🛑 وقف الخسارة: {opportunity.stop_loss:.2f}"
-
-        keyboard = [
-            [InlineKeyboardButton("متابعة الأهداف", callback_data=f"target_{opportunity.id}")],
-            [InlineKeyboardButton("إغلاق الفرصة", callback_data=f"close_{opportunity.id}")]
-        ]
-
-        try:
-            message = await self.app.bot.send_message(
-                chat_id=group.chat_id,
-                text=text,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            opportunity.message_id = message.message_id
-            session.commit()
-        except Exception as e:
-            logging.error(f"Alert Send Error: {str(e)}")
+        return names.get(strategy, '')
 
     # ------------------ Reporting System ------------------
-    async def send_hourly_report(self):
+    async def send_daily_report(self):
         session = Session()
         try:
-            report = "📊 **تقرير الساعة**\n\n"
-            movers = await self.get_top_movers('1h')
+            report = "📊 التقرير اليومي:\n\n"
+            top_gainers = await self.get_top_movers('1d')
             
-            report += "🏆 **أعلى 5 شركات:**\n"
-            report += "\n".join([f"{i+1}. {sym}: {chg}%" for i, (sym, chg) in enumerate(movers[:5])])
+            report += "🏆 أعلى 5 شركات:\n"
+            report += "\n".join([f"{i+1}. {sym}: {chg}%" for i, (sym, chg) in enumerate(top_gainers[:5])])
             
-            report += "\n\n🔻 **أقل 5 شركات:**\n"
-            report += "\n".join([f"{i+1}. {sym}: {chg}%" for i, (sym, chg) in enumerate(movers[-5:])])
+            report += "\n\n🔻 أقل 5 شركات:\n"
+            report += "\n".join([f"{i+1}. {sym}: {chg}%" for i, (sym, chg) in enumerate(top_gainers[-5:])])
             
             groups = session.query(Group).filter(
-                Group.settings['reports']['hourly'].as_boolean(),
+                Group.settings['reports']['daily'].as_boolean(),
                 Group.is_approved == True
             ).all()
             
             for group in groups:
                 await self.app.bot.send_message(
                     chat_id=group.chat_id,
-                    text=report,
-                    parse_mode=ParseMode.MARKDOWN
+                    text=report
                 )
         finally:
             session.close()
-
-    async def send_weekly_report(self):
-        session = Session()
-        try:
-            report = "📅 **تقرير أسبوعي**\n\n"
-            opportunities = session.query(Opportunity).filter(
-                Opportunity.created_at >= datetime.now(SAUDI_TIMEZONE) - timedelta(days=7)
-            ).all()
-            
-            report += f"🔍 عدد الفرص: {len(opportunities)}\n"
-            report += f"✅ الفرص الناجحة: {len([o for o in opportunities if o.status == 'completed'])}\n"
-            report += f"📉 الفرص المغلقة: {len([o for o in opportunities if o.status == 'closed'])}\n\n"
-            
-            report += "📈 أفضل 5 فرص:\n"
-            top_opps = sorted(opportunities, key=lambda x: x.targets[-1] - x.entry_price, reverse=True)[:5]
-            report += "\n".join([f"{o.symbol}: {o.strategy} (+{(o.targets[-1]-o.entry_price)/o.entry_price*100:.2f}%)" for o in top_opps])
-
-            groups = session.query(Group).filter(
-                Group.settings['reports']['weekly'].as_boolean(),
-                Group.is_approved == True
-            ).all()
-            
-            for group in groups:
-                await self.app.bot.send_message(
-                    chat_id=group.chat_id,
-                    text=report,
-                    parse_mode=ParseMode.MARKDOWN
-                )
-        finally:
-            session.close()
-
-    # ------------------ Subscription Management ------------------
-    async def check_subscriptions(self):
-        session = Session()
-        try:
-            groups = session.query(Group).filter(
-                Group.subscription_end <= datetime.now(SAUDI_TIMEZONE) + timedelta(days=3),
-                Group.is_approved == True
-            ).all()
-            
-            for group in groups:
-                await self.app.bot.send_message(
-                    chat_id=group.chat_id,
-                    text=f"⚠️ اشتراكك ينتهي في {group.subscription_end.strftime('%Y-%m-%d')}\n"
-                         "يرجى التواصل مع الدعم لتجديد الاشتراك",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("تجديد الاشتراك", callback_data=f"renew_{group.id}")]
-                    ])
-                )
-        finally:
-            session.close()
-
-    # ------------------ Price Alerts ------------------
-    async def price_alerts(self):
-        session = Session()
-        try:
-            for symbol in STOCK_SYMBOLS:
-                data = yf.download(symbol, period='1d')
-                latest = data.iloc[-1]
-                
-                # Historical High/Low
-                if latest['High'] == data['High'].max():
-                    await self.send_alert_to_groups(f"🚨 أعلى سعر تاريخي لـ {symbol}: {latest['High']:.2f}")
-                if latest['Low'] == data['Low'].min():
-                    await self.send_alert_to_groups(f"🚨 أدنى سعر تاريخي لـ {symbol}: {latest['Low']:.2f}")
-                
-                # News Alerts
-                if NEWS_API_KEY:
-                    news = self.get_stock_news(symbol)
-                    if news:
-                        await self.send_alert_to_groups(f"📰 أخبار جديدة لـ {symbol}:\n{news[:200]}...")
-
-        except Exception as e:
-            logging.error(f"Price Alert Error: {str(e)}")
-        finally:
-            session.close()
-
-    # ------------------ Utility Functions ------------------
-    def calculate_fibonacci(self, data):
-        high = data['High'].max()
-        low = data['Low'].min()
-        diff = high - low
-        
-        return {
-            '23.6%': high - diff * 0.236,
-            '38.2%': high - diff * 0.382,
-            '61.8%': high - diff * 0.618
-        }
 
     async def get_top_movers(self, period):
         movers = []
         for symbol in STOCK_SYMBOLS:
             data = yf.download(symbol, period=period)
-            if len(data) < 2: continue
+            if len(data) < 2:
+                continue
             change = ((data['Close'].iloc[-1] - data['Open'].iloc[0]) / data['Open'].iloc[0]) * 100
             movers.append((symbol, round(change, 2)))
         return sorted(movers, key=lambda x: x[1], reverse=True)
 
-    async def send_alert_to_groups(self, message):
-        session = Session()
+    # ------------------ Group Approval ------------------
+    async def approve_group(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_user.id != OWNER_ID:
+            return await update.message.reply_text("⛔ صلاحية مطلوبة!")
+        
         try:
-            groups = session.query(Group).filter(
-                Group.is_approved == True
-            ).all()
+            _, chat_id = update.message.text.split()
+            session = Session()
+            group = session.query(Group).filter_by(chat_id=chat_id).first()
             
-            for group in groups:
-                await self.app.bot.send_message(
-                    chat_id=group.chat_id,
-                    text=message
-                )
+            if not group:
+                group = Group(chat_id=chat_id)
+                session.add(group)
+            
+            group.is_approved = True
+            group.subscription_end = datetime.now(SAUDI_TIMEZONE) + timedelta(days=30)
+            session.commit()
+            
+            await update.message.reply_text(f"✅ تم تفعيل المجموعة {chat_id}")
+            await self.app.bot.send_message(
+                chat_id=chat_id,
+                text="🎉 تمت الموافقة على مجموعتك!"
+            )
+        except Exception as e:
+            logging.error(f"Approval Error: {str(e)}")
         finally:
             session.close()
 
-    # ------------------ Handlers Implementation ------------------
-    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        # [Previous start handler implementation]
-    
-    async def settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        # [Complete settings handler implementation]
-    
+    # ------------------ Button Handlers ------------------
     async def handle_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        # [Complete button handler implementation]
-    
-    async def approve_group(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        # [Complete approval system implementation]
+        query = update.callback_query
+        await query.answer()
+        
+        if query.data == 'settings':
+            await self.settings(update, context)
+        elif query.data == 'edit_reports':
+            await self.edit_reports(query)
+        elif query.data == 'close':
+            await query.message.delete()
 
-    # ------------------ Deployment Setup ------------------
+    async def edit_reports(self, query):
+        session = Session()
+        try:
+            chat_id = query.message.chat.id
+            group = session.query(Group).filter_by(chat_id=str(chat_id)).first()
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton(f"الساعية {'✅' if group.settings['reports']['hourly'] else '❌'}", 
+                     callback_data='toggle_hourly'),
+                    InlineKeyboardButton(f"اليومية {'✅' if group.settings['reports']['daily'] else '❌'}",
+                     callback_data='toggle_daily')
+                ],
+                [
+                    InlineKeyboardButton(f"الأسبوعية {'✅' if group.settings['reports']['weekly'] else '❌'}",
+                     callback_data='toggle_weekly'),
+                    InlineKeyboardButton("رجوع", callback_data='settings')
+                ]
+            ]
+            
+            await query.edit_message_text(
+                "🛠 تعديل إعدادات التقارير:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        finally:
+            session.close()
+
+    # ------------------ Run Bot ------------------
     async def run(self):
         await self.app.initialize()
         await self.app.start()
