@@ -586,4 +586,4 @@ if __name__ == '__main__':
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.INFO
     )
-    asyncio.run(main())
+    asyncio.run(main()) 
