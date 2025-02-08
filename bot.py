@@ -3,8 +3,10 @@ import logging
 import asyncio
 import pandas as pd
 import numpy as np
-import yfinance as yf
-import pandas_ta as ta
+from pyalgotrade import strategy
+from pyalgotrade.barfeed import yahoofeed
+from pyalgotrade.technical import ma
+from pyalgotrade.technical import bollinger
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from datetime import datetime, timedelta
@@ -13,7 +15,6 @@ from sqlalchemy import create_engine, Column, Integer, String, JSON, DateTime, B
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from telegram.constants import ParseMode
 
 # Configuration
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
@@ -159,7 +160,7 @@ class SaudiStockBot:
         session = Session()
         try:
             for symbol in STOCK_SYMBOLS:
-                data = yf.download(symbol, period='1d', interval='30m')
+                data = self.fetch_stock_data(symbol, '1d', '30m')  # Fetch with PyAlgoTrade
                 if len(data) < 50: 
                     continue
 
@@ -175,12 +176,23 @@ class SaudiStockBot:
         finally:
             session.close()
 
+    def fetch_stock_data(self, symbol, period, interval):
+        # Mock data fetch. This would need to be implemented with PyAlgoTrade's datafeed
+        feed = yahoofeed.Feed()
+        feed.addBarsFromCSV(symbol, "path_to_your_csv_data.csv")
+        bars = []
+        for dateTime, bar in feed[symbol]:
+            bars.append([dateTime, bar.getOpen(), bar.getHigh(), bar.getLow(), bar.getClose(), bar.getVolume()])
+        return pd.DataFrame(bars, columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume'])
+
     def detect_golden_cross(self, data):
-        ema50 = ta.ema(data['Close'], length=50)
-        ema200 = ta.ema(data['Close'], length=200)
-        return ema50.iloc[-1] > ema200.iloc[-1] and ema50.iloc[-2] <= ema200.iloc[-2]
+        # Using PyAlgoTrade moving averages
+        short_ema = ma.EMA(data['Close'], 50)
+        long_ema = ma.EMA(data['Close'], 200)
+        return short_ema[-1] > long_ema[-1] and short_ema[-2] <= long_ema[-2]
 
     def detect_breakout(self, data):
+        # Simple breakout strategy
         return data['Close'].iloc[-1] > data['High'].rolling(14).max().iloc[-2]
 
     async def create_opportunity(self, symbol, strategy, data):
@@ -251,7 +263,7 @@ class SaudiStockBot:
         try:
             report = "📊 التقرير اليومي:\n\n"
             for symbol in STOCK_SYMBOLS:
-                data = yf.download(symbol, period='1d')
+                data = self.fetch_stock_data(symbol, '1d', '1d')
                 change = ((data['Close'].iloc[-1] - data['Open'].iloc[0]) / data['Open'].iloc[0]) * 100
                 report += f"{symbol}: {change:.2f}%\n"
             
@@ -302,7 +314,7 @@ class SaudiStockBot:
         await query.answer()
         
         if query.data == 'settings':
-            await self.settings(Update(update.message), context)
+            await self.settings(update, context)
         elif query.data == 'edit_reports':
             await self.edit_reports(query)
         elif query.data == 'close':
