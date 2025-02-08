@@ -11,5 +11,6 @@ python-bidi>=0.4.2
 arabic-reshaper>=3.0.0
 psycopg2-binary>=2.9.6
 pandas_ta
+Pyalgotarade
 python-telegram-bot[webhooks]==20.3
 python-dotenv  # إذا كنت تستخدم ملف .env للمتغيرات البيئية
