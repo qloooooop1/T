@@ -2,9 +2,9 @@ import os
 import logging
 import asyncio
 import pandas as pd
-import math  # استبدل numpy بـ math
+import numpy as np  # إعادة استيراد numpy
 import yfinance as yf
-import pandas_ta as ta
+import pandas_ta as ta  # إعادة استيراد pandas_ta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from datetime import datetime, timedelta
