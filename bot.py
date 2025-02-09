@@ -15,12 +15,15 @@ from apscheduler.triggers.cron import CronTrigger
 from telegram.constants import ParseMode
 
 # ------------------ Configuration ------------------
-TOKEN = '7812533121:AAFyxg2EeeB4WqFpHecR1gdGUdg9Or7Evlk'  # لا تضع الرمز مباشرة في الكود، استخدم المتغيرات البيئية
-WEBHOOK_URL = 'https://stock1-d9081f321254.herokuapp.com/'  # استخدم هذا الخاص بـ Heroku
+TOKEN = '7812533121:AAFyxg2EeeB4WqFpHecR1gdGUdg9Or7Evlk'  # Do not hardcode token in the code, use environment variables
+WEBHOOK_URL = 'https://stock1-d9081f321254.herokuapp.com/'  # Use your Heroku URL
 SAUDI_TIMEZONE = pytz.timezone('Asia/Riyadh')
 STOCK_SYMBOLS = ['1211.SR', '2222.SR', '3030.SR', '4200.SR']
-OWNER_ID = int(os.environ.get('OWNER_ID', 0))  # يجب أن يكون هذا معرف المالك الفعلي
+OWNER_ID = int(os.environ.get('OWNER_ID', 0))  # Must be the actual owner's ID
 DATABASE_URL = os.environ.get('DATABASE_URL').replace("postgres://", "postgresql://", 1)
+
+# Environment variables for group activation
+ACTIVATED_GROUPS = os.environ.get('ACTIVATED_GROUPS', '').split(',')
 
 # Initialize database
 Base = declarative_base()
@@ -98,6 +101,11 @@ class SaudiStockBot:
              InlineKeyboardButton("التقارير 📊", callback_data='reports')],
             [InlineKeyboardButton("الدعم الفني 📞", url='t.me/support')]
         ]
+        chat_id = str(update.effective_chat.id)
+        if chat_id not in ACTIVATED_GROUPS:
+            await update.message.reply_text("⚠️ يجب تفعيل المجموعة لاستخدام البوت. الرجاء التواصل مع الدعم الفني.")
+            return
+
         await update.message.reply_text(
             "مرحبًا بكم في بوت الأسهم السعودية المتقدم! 📈",
             reply_markup=InlineKeyboardMarkup(keyboard)
@@ -107,6 +115,10 @@ class SaudiStockBot:
         session = Session()
         try:
             chat_id = str(update.effective_chat.id)
+            if chat_id not in ACTIVATED_GROUPS:
+                await update.message.reply_text("⚠️ يجب تفعيل المجموعة لاستخدام البوت. الرجاء التواصل مع الدعم الفني.")
+                return
+
             group = session.query(Group).filter_by(chat_id=chat_id).first()
             
             if not group or not group.is_approved:
@@ -345,6 +357,11 @@ class SaudiStockBot:
             group.subscription_end = datetime.now(SAUDI_TIMEZONE) + timedelta(days=30)
             session.commit()
             
+            # Add the group's chat_id to ACTIVATED_GROUPS list
+            if chat_id not in ACTIVATED_GROUPS:
+                ACTIVATED_GROUPS.append(chat_id)
+                os.environ['ACTIVATED_GROUPS'] = ','.join(ACTIVATED_GROUPS)
+            
             await update.message.reply_text(f"✅ تم تفعيل المجموعة {chat_id}")
             await self.app.bot.send_message(
                 chat_id=chat_id,
@@ -403,7 +420,7 @@ class SaudiStockBot:
         await self.app.start()
         self.scheduler.start()
         
-        # تأكد من أن url_path فارغ لتوجيه طلبات الويب هوك إلى المسار الجذر
+        # Ensure url_path is empty for webhook requests to be directed to the root path
         await self.app.updater.start_webhook(
             listen="0.0.0.0",
             port=int(os.environ.get('PORT', 5000)),
