@@ -35,8 +35,6 @@ class Group(Base):
     __tablename__ = 'groups'
     id = Column(Integer, primary_key=True)
     chat_id = Column(String, unique=True)
-    is_approved = Column(Boolean, default=False)
-    subscription_end = Column(DateTime)
     settings = Column(JSON, default={
         'reports': {'hourly': True, 'daily': True, 'weekly': True},
         'strategies': {
@@ -65,14 +63,6 @@ class Opportunity(Base):
     group = relationship('Group', back_populates='opportunities')
     created_at = Column(DateTime, default=lambda: datetime.now(SAUDI_TIMEZONE))
 
-class ApprovalRequest(Base):
-    __tablename__ = 'approval_requests'
-    id = Column(Integer, primary_key=True)
-    chat_id = Column(String)
-    requester_id = Column(String)
-    requested_at = Column(DateTime, default=lambda: datetime.now(SAUDI_TIMEZONE))
-    handled = Column(Boolean, default=False)
-
 Base.metadata.create_all(engine)
 
 class SaudiStockBot:
@@ -86,7 +76,6 @@ class SaudiStockBot:
     def setup_handlers(self):
         self.app.add_handler(CommandHandler('start', self.start))
         self.app.add_handler(CommandHandler('settings', self.settings))
-        self.app.add_handler(CommandHandler('approve', self.approve_group))
         self.app.add_handler(CallbackQueryHandler(self.handle_button))
 
     # ------------------ Scheduler Setup ------------------
@@ -112,20 +101,23 @@ class SaudiStockBot:
         )
 
     async def settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        chat_id = str(update.effective_chat.id)
+        message = update.message or update.callback_query.message  # Handle both cases
+
+        if chat_id not in ACTIVATED_GROUPS:
+            await message.reply_text("⚠️ يجب تفعيل المجموعة لاستخدام البوت. الرجاء التواصل مع الدعم الفني.")
+            return
+
         session = Session()
         try:
-            chat_id = str(update.effective_chat.id)
-            message = update.message or update.callback_query.message  # Handle both cases
-
-            # Check if the group is in ACTIVATED_GROUPS and approved in the database
-            group_activated = chat_id in ACTIVATED_GROUPS
-            group_in_db = session.query(Group).filter_by(chat_id=chat_id).first()
+            group = session.query(Group).filter_by(chat_id=chat_id).first()
             
-            if not group_activated or not (group_in_db and group_in_db.is_approved):
-                await message.reply_text("⚠️ يلزم تفعيل المجموعة أولاً")
-                return
+            if not group:
+                group = Group(chat_id=chat_id)
+                session.add(group)
+                session.commit()
             
-            settings_text = self.format_settings_text(group_in_db)
+            settings_text = self.format_settings_text(group)
             buttons = self.create_settings_buttons()
 
             await message.reply_text(
@@ -287,7 +279,7 @@ class SaudiStockBot:
         try:
             groups = session.query(Group).filter(
                 Group.settings['strategies'][opportunity.strategy].as_boolean(),
-                Group.is_approved == True
+                Group.chat_id.in_(ACTIVATED_GROUPS)
             ).all()
             
             if not groups:
@@ -342,7 +334,7 @@ class SaudiStockBot:
             
             groups = session.query(Group).filter(
                 Group.settings['reports']['daily'].as_boolean(),
-                Group.is_approved == True
+                Group.chat_id.in_(ACTIVATED_GROUPS)
             ).all()
             
             for group in groups:
@@ -366,39 +358,6 @@ class SaudiStockBot:
             change = ((data['Close'].iloc[-1] - data['Open'].iloc[0]) / data['Open'].iloc[0]) * 100
             movers.append((symbol, round(change, 2)))
         return sorted(movers, key=lambda x: x[1], reverse=True)
-
-    # ------------------ Group Approval ------------------
-    async def approve_group(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if update.effective_user.id != OWNER_ID:
-            return await update.message.reply_text("⛔ صلاحية مطلوبة!")
-        
-        try:
-            _, chat_id = update.message.text.split()
-            session = Session()
-            group = session.query(Group).filter_by(chat_id=chat_id).first()
-            
-            if not group:
-                group = Group(chat_id=chat_id)
-                session.add(group)
-            
-            group.is_approved = True
-            group.subscription_end = datetime.now(SAUDI_TIMEZONE) + timedelta(days=30)
-            session.commit()
-            
-            # Add the group's chat_id to ACTIVATED_GROUPS list
-            if chat_id not in ACTIVATED_GROUPS:
-                ACTIVATED_GROUPS.append(chat_id)
-                os.environ['ACTIVATED_GROUPS'] = ','.join(ACTIVATED_GROUPS)
-            
-            await update.message.reply_text(f"✅ تم تفعيل المجموعة {chat_id}")
-            await self.app.bot.send_message(
-                chat_id=chat_id,
-                text="🎉 تمت الموافقة على مجموعتك!"
-            )
-        except Exception as e:
-            logging.error(f"Approval Error: {str(e)}")
-        finally:
-            session.close()
 
     # ------------------ Button Handlers ------------------
     async def handle_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
