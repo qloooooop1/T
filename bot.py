@@ -13,6 +13,7 @@ from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from telegram.constants import ParseMode
+import re
 
 # ------------------ Configuration ------------------
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')  # Use environment variables for security
@@ -76,7 +77,9 @@ class SaudiStockBot:
     def setup_handlers(self):
         self.app.add_handler(CommandHandler('start', self.start))
         self.app.add_handler(CommandHandler('settings', self.settings))
+        self.app.add_handler(CommandHandler('analyze', self.analyze))
         self.app.add_handler(CallbackQueryHandler(self.handle_button))
+        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
 
     # ------------------ Scheduler Setup ------------------
     def setup_scheduler(self):
