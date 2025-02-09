@@ -15,8 +15,8 @@ from apscheduler.triggers.cron import CronTrigger
 from telegram.constants import ParseMode
 
 # ------------------ Configuration ------------------
-TOKEN = '7812533121:AAFyxg2EeeB4WqFpHecR1gdGUdg9Or7Evlk'  # Use environment variables for security
-WEBHOOK_URL = 'https://stock1-d9081f321254.herokuapp.com/'  # Heroku URL
+TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')  # Use environment variables for security
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL')  # Heroku URL
 SAUDI_TIMEZONE = pytz.timezone('Asia/Riyadh')
 STOCK_SYMBOLS = ['1211.SR', '2222.SR', '3030.SR', '4200.SR']
 OWNER_ID = int(os.environ.get('OWNER_ID', 0))  # Owner's actual ID
