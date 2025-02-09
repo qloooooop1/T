@@ -1,10 +1,11 @@
+# Libraries
 import os
 import logging
 import asyncio
 import pandas as pd
-import numpy as np  # إعادة استيراد numpy
+import numpy as np
 import yfinance as yf
-import pandas_ta as ta  # إعادة استيراد pandas_ta
+import pandas_ta as ta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from datetime import datetime, timedelta
