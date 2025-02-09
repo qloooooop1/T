@@ -19,7 +19,7 @@ TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
 SAUDI_TIMEZONE = pytz.timezone('Asia/Riyadh')
 STOCK_SYMBOLS = ['1211.SR', '2222.SR', '3030.SR', '4200.SR']
-OWNER_ID = int(os.environ.get('OWNER_ID'))
+OWNER_ID = int(os.environ.get('OWNER_ID', 0))  # Default to 0 if not provided
 DATABASE_URL = os.environ.get('DATABASE_URL').replace("postgres://", "postgresql://", 1)
 
 # Initialize database
@@ -112,25 +112,9 @@ class SaudiStockBot:
             if not group or not group.is_approved:
                 return await update.message.reply_text("⚠️ يلزم تفعيل المجموعة أولاً")
             
-            settings_text = (
-                "⚙️ إعدادات المجموعة:\n\n"
-                f"📊 التقارير:\n"
-                f"- ساعية: {'✅' if group.settings['reports']['hourly'] else '❌'}\n"
-                f"- يومية: {'✅' if group.settings['reports']['daily'] else '❌'}\n"
-                f"- أسبوعية: {'✅' if group.settings['reports']['weekly'] else '❌'}\n\n"
-                f"🔍 الاستراتيجيات:\n"
-                f"- ذهبية: {'✅' if group.settings['strategies']['golden'] else '❌'}\n"
-                f"- زلزالية: {'✅' if group.settings['strategies']['earthquake'] else '❌'}\n"
-                f"- بركانية: {'✅' if group.settings['strategies']['volcano'] else '❌'}\n"
-                f"- برقية: {'✅' if group.settings['strategies']['lightning'] else '❌'}"
-            )
+            settings_text = self.format_settings_text(group)
+            buttons = self.create_settings_buttons()
 
-            buttons = [
-                [InlineKeyboardButton("تعديل التقارير", callback_data='edit_reports'),
-                 InlineKeyboardButton("تعديل الاستراتيجيات", callback_data='edit_strategies')],
-                [InlineKeyboardButton("إغلاق", callback_data='close')]
-            ]
-            
             await update.message.reply_text(
                 settings_text,
                 reply_markup=InlineKeyboardMarkup(buttons)
@@ -139,6 +123,28 @@ class SaudiStockBot:
             logging.error(f"Settings Error: {str(e)}")
         finally:
             session.close()
+
+    def format_settings_text(self, group):
+        settings = group.settings
+        return (
+            "⚙️ إعدادات المجموعة:\n\n"
+            f"📊 التقارير:\n"
+            f"- ساعية: {'✅' if settings['reports']['hourly'] else '❌'}\n"
+            f"- يومية: {'✅' if settings['reports']['daily'] else '❌'}\n"
+            f"- أسبوعية: {'✅' if settings['reports']['weekly'] else '❌'}\n\n"
+            f"🔍 الاستراتيجيات:\n"
+            f"- ذهبية: {'✅' if settings['strategies']['golden'] else '❌'}\n"
+            f"- زلزالية: {'✅' if settings['strategies']['earthquake'] else '❌'}\n"
+            f"- بركانية: {'✅' if settings['strategies']['volcano'] else '❌'}\n"
+            f"- برقية: {'✅' if settings['strategies']['lightning'] else '❌'}"
+        )
+
+    def create_settings_buttons(self):
+        return [
+            [InlineKeyboardButton("تعديل التقارير", callback_data='edit_reports'),
+             InlineKeyboardButton("تعديل الاستراتيجيات", callback_data='edit_strategies')],
+            [InlineKeyboardButton("إغلاق", callback_data='close')]
+        ]
 
     # ------------------ Opportunity Detection ------------------
     async def check_opportunities(self):
@@ -260,11 +266,15 @@ class SaudiStockBot:
             )
             
             for group in groups:
-                await self.app.bot.send_message(
-                    chat_id=group.chat_id,
-                    text=text,
-                    parse_mode=ParseMode.HTML
-                )
+                try:
+                    await self.app.bot.send_message(
+                        chat_id=group.chat_id,
+                        text=text,
+                        parse_mode=ParseMode.HTML
+                    )
+                except Exception as e:
+                    logging.error(f"Failed to send alert to group {group.chat_id}: {e}")
+
         finally:
             session.close()
 
@@ -296,10 +306,14 @@ class SaudiStockBot:
             ).all()
             
             for group in groups:
-                await self.app.bot.send_message(
-                    chat_id=group.chat_id,
-                    text=report
-                )
+                try:
+                    await self.app.bot.send_message(
+                        chat_id=group.chat_id,
+                        text=report
+                    )
+                except Exception as e:
+                    logging.error(f"Failed to send daily report to group {group.chat_id}: {e}")
+
         finally:
             session.close()
 
@@ -359,19 +373,7 @@ class SaudiStockBot:
             chat_id = query.message.chat.id
             group = session.query(Group).filter_by(chat_id=str(chat_id)).first()
             
-            keyboard = [
-                [
-                    InlineKeyboardButton(f"الساعية {'✅' if group.settings['reports']['hourly'] else '❌'}", 
-                     callback_data='toggle_hourly'),
-                    InlineKeyboardButton(f"اليومية {'✅' if group.settings['reports']['daily'] else '❌'}",
-                     callback_data='toggle_daily')
-                ],
-                [
-                    InlineKeyboardButton(f"الأسبوعية {'✅' if group.settings['reports']['weekly'] else '❌'}",
-                     callback_data='toggle_weekly'),
-                    InlineKeyboardButton("رجوع", callback_data='settings')
-                ]
-            ]
+            keyboard = self.create_report_edit_buttons(group.settings)
             
             await query.edit_message_text(
                 "🛠 تعديل إعدادات التقارير:",
@@ -380,12 +382,28 @@ class SaudiStockBot:
         finally:
             session.close()
 
+    def create_report_edit_buttons(self, settings):
+        return [
+            [
+                InlineKeyboardButton(f"الساعية {'✅' if settings['reports']['hourly'] else '❌'}", 
+                 callback_data='toggle_hourly'),
+                InlineKeyboardButton(f"اليومية {'✅' if settings['reports']['daily'] else '❌'}",
+                 callback_data='toggle_daily')
+            ],
+            [
+                InlineKeyboardButton(f"الأسبوعية {'✅' if settings['reports']['weekly'] else '❌'}",
+                 callback_data='toggle_weekly'),
+                InlineKeyboardButton("رجوع", callback_data='settings')
+            ]
+        ]
+
     # ------------------ Run Bot ------------------
     async def run(self):
         await self.app.initialize()
         await self.app.start()
         self.scheduler.start()
         
+        # Ensure the webhook is set correctly
         await self.app.updater.start_webhook(
             listen="0.0.0.0",
             port=int(os.environ.get('PORT', 5000)),
@@ -394,7 +412,12 @@ class SaudiStockBot:
         )
         
         logging.info("Bot is running...")
-        await asyncio.Event().wait()
+        try:
+            await asyncio.Event().wait()
+        except KeyboardInterrupt:
+            logging.info("Bot is shutting down...")
+            await self.app.stop()
+            self.scheduler.shutdown(wait=False)
 
 if __name__ == '__main__':
     logging.basicConfig(
