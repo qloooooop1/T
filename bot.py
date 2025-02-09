@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 from datetime import datetime, timedelta
 import pytz
 from sqlalchemy import create_engine, Column, Integer, String, JSON, DateTime, Boolean, Float, ForeignKey, Text
@@ -14,6 +14,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from telegram.constants import ParseMode
 import re
+import random
 
 # ------------------ Configuration ------------------
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')  # Use environment variables for security
@@ -45,7 +46,11 @@ class Group(Base):
         'protection': {
             'max_messages': 200,
             'antiflood': True,
-            'max_warnings': 3
+            'max_warnings': 3,
+            'delete_phone_numbers': True,
+            'delete_whatsapp_links': True,
+            'delete_telegram_links': True,
+            'mute_duration': 3  # Default mute duration in days
         }
     })
     opportunities = relationship('Opportunity', back_populates='group')
@@ -144,13 +149,19 @@ class SaudiStockBot:
             f"- ذهبية: {'✅' if settings['strategies']['golden'] else '❌'}\n"
             f"- زلزالية: {'✅' if settings['strategies']['earthquake'] else '❌'}\n"
             f"- بركانية: {'✅' if settings['strategies']['volcano'] else '❌'}\n"
-            f"- برقية: {'✅' if settings['strategies']['lightning'] else '❌'}"
+            f"- برقية: {'✅' if settings['strategies']['lightning'] else '❌'}\n\n"
+            f"🛡️ الحماية:\n"
+            f"- حذف أرقام الجوالات: {'✅' if settings['protection']['delete_phone_numbers'] else '❌'}\n"
+            f"- حذف روابط الواتساب: {'✅' if settings['protection']['delete_whatsapp_links'] else '❌'}\n"
+            f"- حذف روابط التليجرام: {'✅' if settings['protection']['delete_telegram_links'] else '❌'}\n"
+            f"- مدة الكتم: {settings['protection']['mute_duration']} أيام"
         )
 
     def create_settings_buttons(self):
         return [
             [InlineKeyboardButton("تعديل التقارير", callback_data='edit_reports'),
              InlineKeyboardButton("تعديل الاستراتيجيات", callback_data='edit_strategies')],
+            [InlineKeyboardButton("تعديل الحماية", callback_data='edit_protection')],
             [InlineKeyboardButton("إغلاق", callback_data='close')]
         ]
 
@@ -371,6 +382,8 @@ class SaudiStockBot:
             await self.settings(update, context)
         elif query.data == 'edit_reports':
             await self.edit_reports(query)
+        elif query.data == 'edit_protection':
+            await self.edit_protection(query)
         elif query.data == 'close':
             await query.message.delete()
 
@@ -412,6 +425,167 @@ class SaudiStockBot:
                 InlineKeyboardButton("رجوع", callback_data='settings')
             ]
         ]
+
+    async def edit_protection(self, query):
+        session = Session()
+        try:
+            chat_id = query.message.chat.id
+            group = session.query(Group).filter_by(chat_id=str(chat_id)).first()
+            
+            if not group:
+                await query.message.reply_text("⚠️ المجموعة غير موجودة في قاعدة البيانات")
+                return
+            
+            keyboard = self.create_protection_edit_buttons(group.settings)
+            
+            await query.edit_message_text(
+                "🛠 تعديل إعدادات الحماية:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except Exception as e:
+            logging.error(f"Edit Protection Error: {str(e)}")
+        finally:
+            session.close()
+
+    def create_protection_edit_buttons(self, settings):
+        if not settings or 'protection' not in settings:
+            return []
+
+        return [
+            [
+                InlineKeyboardButton(f"حذف أرقام الجوالات {'✅' if settings['protection']['delete_phone_numbers'] else '❌'}", 
+                 callback_data='toggle_delete_phone_numbers'),
+                InlineKeyboardButton(f"حذف روابط الواتساب {'✅' if settings['protection']['delete_whatsapp_links'] else '❌'}",
+                 callback_data='toggle_delete_whatsapp_links')
+            ],
+            [
+                InlineKeyboardButton(f"حذف روابط التليجرام {'✅' if settings['protection']['delete_telegram_links'] else '❌'}",
+                 callback_data='toggle_delete_telegram_links'),
+                InlineKeyboardButton(f"مدة الكتم: {settings['protection']['mute_duration']} أيام",
+                 callback_data='edit_mute_duration')
+            ],
+            [
+                InlineKeyboardButton("رجوع", callback_data='settings')
+            ]
+        ]
+
+    # ------------------ Message Handler ------------------
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        chat_id = str(update.effective_chat.id)
+        message = update.message
+
+        if chat_id not in ACTIVATED_GROUPS:
+            return
+
+        session = Session()
+        try:
+            group = session.query(Group).filter_by(chat_id=chat_id).first()
+            
+            if not group:
+                return
+
+            # Check for phone numbers
+            if group.settings['protection']['delete_phone_numbers']:
+                phone_numbers = re.findall(r'\+9665\d{8}|\+9665\d{8}|\+9665\d{8}', message.text)
+                if phone_numbers:
+                    await self.delete_message_and_mute_user(message, group)
+                    return
+
+            # Check for WhatsApp links
+            if group.settings['protection']['delete_whatsapp_links']:
+                whatsapp_links = re.findall(r'https?://wa\.me/\d+|https?://chat\.whatsapp\.com/\w+', message.text)
+                if whatsapp_links:
+                    await self.delete_message_and_mute_user(message, group)
+                    return
+
+            # Check for Telegram links
+            if group.settings['protection']['delete_telegram_links']:
+                telegram_links = re.findall(r'https?://t\.me/\w+|https?://telegram\.me/\w+', message.text)
+                if telegram_links:
+                    await self.delete_message_and_mute_user(message, group)
+                    return
+
+        except Exception as e:
+            logging.error(f"Message Handling Error: {str(e)}")
+        finally:
+            session.close()
+
+    async def delete_message_and_mute_user(self, message, group):
+        try:
+            await message.delete()
+            mute_duration = timedelta(days=group.settings['protection']['mute_duration'])
+            await message.chat.restrict_member(
+                message.from_user.id,
+                until_date=datetime.now(SAUDI_TIMEZONE) + mute_duration,
+                permissions=None
+            )
+            mock_messages = [
+                f"@{message.from_user.username} يا حبيبي، ما نسمح بالإعلانات هنا! 😅",
+                f"@{message.from_user.username} شكلك جديد هنا، الإعلانات ممنوعة! 🚫",
+                f"@{message.from_user.username} الإعلانات ممنوعة، خلك في حدود الأدب! 😉"
+            ]
+            await message.reply_text(random.choice(mock_messages))
+        except Exception as e:
+            logging.error(f"Failed to delete message and mute user: {e}")
+
+    # ------------------ Analyze Command ------------------
+    async def analyze(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        chat_id = str(update.effective_chat.id)
+        message = update.message
+
+        if chat_id not in ACTIVATED_GROUPS:
+            await message.reply_text("⚠️ يجب تفعيل المجموعة لاستخدام البوت. الرجاء التواصل مع الدعم الفني.")
+            return
+
+        symbol = message.text.split()[1] if len(message.text.split()) > 1 else None
+        if not symbol or len(symbol) != 4 or not symbol.isdigit():
+            await message.reply_text("⚠️ الرجاء إدخال رمز شركة صحيح مكون من 4 أرقام.")
+            return
+
+        symbol += '.SR'
+        if symbol not in STOCK_SYMBOLS:
+            await message.reply_text("⚠️ الرمز غير موجود في قائمة الشركات المدعومة.")
+            return
+
+        try:
+            data = yf.download(symbol, period='1d', interval='1h')
+            if data.empty:
+                await message.reply_text("⚠️ لا توجد بيانات متاحة للشركة.")
+                return
+
+            analysis = self.perform_technical_analysis(data)
+            await message.reply_text(analysis, parse_mode=ParseMode.HTML)
+        except Exception as e:
+            logging.error(f"Analyze Error: {str(e)}")
+            await message.reply_text("⚠️ حدث خطأ أثناء تحليل الشركة.")
+
+    def perform_technical_analysis(self, data):
+        close = data['Close']
+        high = data['High']
+        low = data['Low']
+        volume = data['Volume']
+
+        ema50 = self.ema(close, 50)
+        ema200 = self.ema(close, 200)
+
+        analysis = (
+            f"📈 <b>التحليل الفني للشركة:</b>\n\n"
+            f"💰 <b>السعر الحالي:</b> {close.iloc[-1]:.2f}\n"
+            f"📊 <b>أعلى سعر اليوم:</b> {high.iloc[-1]:.2f}\n"
+            f"📉 <b>أقل سعر اليوم:</b> {low.iloc[-1]:.2f}\n"
+            f"📈 <b>متوسط 50 يوم:</b> {ema50.iloc[-1]:.2f}\n"
+            f"📊 <b>متوسط 200 يوم:</b> {ema200.iloc[-1]:.2f}\n\n"
+            f"📈 <b>الاتجاه العام:</b> {'صاعد' if close.iloc[-1] > ema200.iloc[-1] else 'هابط'}\n"
+            f"📊 <b>الدعوم والمقاومات:</b>\n"
+            f"- الدعم القريب: {low.iloc[-1]:.2f}\n"
+            f"- المقاومة القريبة: {high.iloc[-1]:.2f}\n\n"
+            f"📈 <b>الأهداف:</b>\n"
+            f"- الهدف القريب: {close.iloc[-1] * 1.05:.2f}\n"
+            f"- الهدف المتوسط: {close.iloc[-1] * 1.1:.2f}\n"
+            f"- الهدف البعيد: {close.iloc[-1] * 1.2:.2f}\n\n"
+            f"📉 <b>وقف الخسارة:</b> {close.iloc[-1] * 0.95:.2f}"
+        )
+        return analysis
 
     # ------------------ Run Bot ------------------
     async def run(self):
