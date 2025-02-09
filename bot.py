@@ -15,11 +15,11 @@ from apscheduler.triggers.cron import CronTrigger
 from telegram.constants import ParseMode
 
 # ------------------ Configuration ------------------
-TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
+TOKEN = '7812533121:AAFyxg2EeeB4WqFpHecR1gdGUdg9Or7Evlk'  # لا تضع الرمز مباشرة في الكود، استخدم المتغيرات البيئية
+WEBHOOK_URL = 'https://stock1-d9081f321254.herokuapp.com/'  # استخدم هذا الخاص بـ Heroku
 SAUDI_TIMEZONE = pytz.timezone('Asia/Riyadh')
 STOCK_SYMBOLS = ['1211.SR', '2222.SR', '3030.SR', '4200.SR']
-OWNER_ID = int(os.environ.get('OWNER_ID', 0))  # Default to 0 if not provided
+OWNER_ID = int(os.environ.get('OWNER_ID', 0))  # يجب أن يكون هذا معرف المالك الفعلي
 DATABASE_URL = os.environ.get('DATABASE_URL').replace("postgres://", "postgresql://", 1)
 
 # Initialize database
@@ -93,7 +93,6 @@ class SaudiStockBot:
 
     # ------------------ Core Handlers ------------------
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        logging.info(f"Received /start command from {update.effective_user.id}")
         keyboard = [
             [InlineKeyboardButton("الإعدادات ⚙️", callback_data='settings'),
              InlineKeyboardButton("التقارير 📊", callback_data='reports')],
@@ -105,7 +104,6 @@ class SaudiStockBot:
         )
 
     async def settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        logging.info(f"Received /settings command from {update.effective_user.id}")
         session = Session()
         try:
             chat_id = str(update.effective_chat.id)
@@ -405,11 +403,11 @@ class SaudiStockBot:
         await self.app.start()
         self.scheduler.start()
         
-        # Ensure the webhook is set correctly
+        # تأكد من أن url_path فارغ لتوجيه طلبات الويب هوك إلى المسار الجذر
         await self.app.updater.start_webhook(
             listen="0.0.0.0",
             port=int(os.environ.get('PORT', 5000)),
-            url_path=TOKEN,  # Ensure this matches your webhook URL path
+            url_path="",
             webhook_url=WEBHOOK_URL
         )
         
