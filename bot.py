@@ -15,11 +15,11 @@ from apscheduler.triggers.cron import CronTrigger
 from telegram.constants import ParseMode
 
 # ------------------ Configuration ------------------
-TOKEN = '7812533121:AAFyxg2EeeB4WqFpHecR1gdGUdg9Or7Evlk'  # Do not hardcode token in the code, use environment variables
-WEBHOOK_URL = 'https://stock1-d9081f321254.herokuapp.com/'  # Use your Heroku URL
+TOKEN = '7812533121:AAFyxg2EeeB4WqFpHecR1gdGUdg9Or7Evlk'  # Use environment variables for security
+WEBHOOK_URL = 'https://stock1-d9081f321254.herokuapp.com/'  # Heroku URL
 SAUDI_TIMEZONE = pytz.timezone('Asia/Riyadh')
 STOCK_SYMBOLS = ['1211.SR', '2222.SR', '3030.SR', '4200.SR']
-OWNER_ID = int(os.environ.get('OWNER_ID', 0))  # Must be the actual owner's ID
+OWNER_ID = int(os.environ.get('OWNER_ID', 0))  # Owner's actual ID
 DATABASE_URL = os.environ.get('DATABASE_URL').replace("postgres://", "postgresql://", 1)
 
 # Environment variables for group activation
@@ -115,16 +115,15 @@ class SaudiStockBot:
         session = Session()
         try:
             chat_id = str(update.effective_chat.id)
-            if chat_id not in ACTIVATED_GROUPS:
-                await update.message.reply_text("⚠️ يجب تفعيل المجموعة لاستخدام البوت. الرجاء التواصل مع الدعم الفني.")
+            # Check if the group is in ACTIVATED_GROUPS and approved in the database
+            group_activated = chat_id in ACTIVATED_GROUPS
+            group_in_db = session.query(Group).filter_by(chat_id=chat_id).first()
+            
+            if not group_activated or not (group_in_db and group_in_db.is_approved):
+                await update.message.reply_text("⚠️ يلزم تفعيل المجموعة أولاً")
                 return
-
-            group = session.query(Group).filter_by(chat_id=chat_id).first()
             
-            if not group or not group.is_approved:
-                return await update.message.reply_text("⚠️ يلزم تفعيل المجموعة أولاً")
-            
-            settings_text = self.format_settings_text(group)
+            settings_text = self.format_settings_text(group_in_db)
             buttons = self.create_settings_buttons()
 
             await update.message.reply_text(
@@ -420,7 +419,6 @@ class SaudiStockBot:
         await self.app.start()
         self.scheduler.start()
         
-        # Ensure url_path is empty for webhook requests to be directed to the root path
         await self.app.updater.start_webhook(
             listen="0.0.0.0",
             port=int(os.environ.get('PORT', 5000)),
