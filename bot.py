@@ -115,18 +115,20 @@ class SaudiStockBot:
         session = Session()
         try:
             chat_id = str(update.effective_chat.id)
+            message = update.message or update.callback_query.message  # Handle both cases
+
             # Check if the group is in ACTIVATED_GROUPS and approved in the database
             group_activated = chat_id in ACTIVATED_GROUPS
             group_in_db = session.query(Group).filter_by(chat_id=chat_id).first()
             
             if not group_activated or not (group_in_db and group_in_db.is_approved):
-                await update.message.reply_text("⚠️ يلزم تفعيل المجموعة أولاً")
+                await message.reply_text("⚠️ يلزم تفعيل المجموعة أولاً")
                 return
             
             settings_text = self.format_settings_text(group_in_db)
             buttons = self.create_settings_buttons()
 
-            await update.message.reply_text(
+            await message.reply_text(
                 settings_text,
                 reply_markup=InlineKeyboardMarkup(buttons)
             )
@@ -198,28 +200,42 @@ class SaudiStockBot:
         return pd.Series(ema, index=close.index)
 
     def detect_golden_cross(self, data):
+        if 'Close' not in data.columns:
+            return False
+
         ema50 = self.ema(data['Close'], 50)
         ema200 = self.ema(data['Close'], 200)
         return ema50.iloc[-1] > ema200.iloc[-1] and ema50.iloc[-2] <= ema200.iloc[-2]
 
     def detect_earthquake(self, data):
+        if 'Close' not in data.columns or 'High' not in data.columns or 'Volume' not in data.columns:
+            return False
+
         return (data['Close'].iloc[-1] > data['High'].rolling(14).max().iloc[-2] and
                 data['Volume'].iloc[-1] > data['Volume'].mean() * 2)
 
     def detect_volcano(self, data):
-        # Simplified Fibonacci detection - you might want to expand this
+        if 'High' not in data.columns or 'Low' not in data.columns or 'Close' not in data.columns:
+            return False
+
         high = data['High'].max()
         low = data['Low'].min()
         return data['Close'].iloc[-1] > low + 0.618 * (high - low)  # 61.8% retracement
 
     def detect_lightning(self, data):
-        # Simplified candlestick pattern detection
+        if 'High' not in data.columns or 'Low' not in data.columns or 'Close' not in data.columns:
+            return False
+
         return data['High'].iloc[-1] - data['Low'].iloc[-1] > data['Close'].iloc[-2] * 0.05  # Example: Large range candle
 
     # ------------------ Opportunity Management ------------------
     async def create_opportunity(self, symbol, strategy, data):
         session = Session()
         try:
+            if data.empty or 'Close' not in data.columns:
+                logging.error(f"No data available for symbol {symbol}")
+                return
+
             entry_price = data['Close'].iloc[-1]
             stop_loss = self.calculate_stop_loss(strategy, data)
             targets = self.calculate_targets(strategy, entry_price)
@@ -243,6 +259,9 @@ class SaudiStockBot:
             session.close()
 
     def calculate_targets(self, strategy, entry):
+        if not entry:
+            return []
+
         strategies = {
             'golden': [round(entry * (1 + i*0.05), 2) for i in range(1,5)],
             'earthquake': [round(entry * (1 + i*0.08), 2) for i in range(1,3)],
@@ -252,6 +271,9 @@ class SaudiStockBot:
         return strategies.get(strategy, [])
 
     def calculate_stop_loss(self, strategy, data):
+        if 'Close' not in data.columns or 'Low' not in data.columns:
+            return 0.0
+
         if strategy == 'golden':
             return data['Low'].iloc[-2] * 0.98
         elif strategy == 'earthquake':
@@ -267,6 +289,10 @@ class SaudiStockBot:
                 Group.settings['strategies'][opportunity.strategy].as_boolean(),
                 Group.is_approved == True
             ).all()
+            
+            if not groups:
+                logging.info("No groups found for the alert")
+                return
             
             text = (
                 f"🚨 إشارة {self.get_strategy_name(opportunity.strategy)}\n"
@@ -305,11 +331,14 @@ class SaudiStockBot:
             report = "📊 التقرير اليومي:\n\n"
             top_gainers = await self.get_top_movers('1d')
             
-            report += "🏆 أعلى 5 شركات:\n"
-            report += "\n".join([f"{i+1}. {sym}: {chg}%" for i, (sym, chg) in enumerate(top_gainers[:5])])
-            
-            report += "\n\n🔻 أقل 5 شركات:\n"
-            report += "\n".join([f"{i+1}. {sym}: {chg}%" for i, (sym, chg) in enumerate(top_gainers[-5:])])
+            if not top_gainers:
+                report += "⚠️ لا توجد بيانات متاحة اليوم.\n"
+            else:
+                report += "🏆 أعلى 5 شركات:\n"
+                report += "\n".join([f"{i+1}. {sym}: {chg}%" for i, (sym, chg) in enumerate(top_gainers[:5])])
+                
+                report += "\n\n🔻 أقل 5 شركات:\n"
+                report += "\n".join([f"{i+1}. {sym}: {chg}%" for i, (sym, chg) in enumerate(top_gainers[-5:])])
             
             groups = session.query(Group).filter(
                 Group.settings['reports']['daily'].as_boolean(),
@@ -389,16 +418,25 @@ class SaudiStockBot:
             chat_id = query.message.chat.id
             group = session.query(Group).filter_by(chat_id=str(chat_id)).first()
             
+            if not group:
+                await query.message.reply_text("⚠️ المجموعة غير موجودة في قاعدة البيانات")
+                return
+            
             keyboard = self.create_report_edit_buttons(group.settings)
             
             await query.edit_message_text(
                 "🛠 تعديل إعدادات التقارير:",
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
+        except Exception as e:
+            logging.error(f"Edit Reports Error: {str(e)}")
         finally:
             session.close()
 
     def create_report_edit_buttons(self, settings):
+        if not settings or 'reports' not in settings:
+            return []
+
         return [
             [
                 InlineKeyboardButton(f"الساعية {'✅' if settings['reports']['hourly'] else '❌'}", 
@@ -419,12 +457,15 @@ class SaudiStockBot:
         await self.app.start()
         self.scheduler.start()
         
-        await self.app.updater.start_webhook(
-            listen="0.0.0.0",
-            port=int(os.environ.get('PORT', 5000)),
-            url_path="",
-            webhook_url=WEBHOOK_URL
-        )
+        if WEBHOOK_URL and os.environ.get('PORT'):
+            await self.app.updater.start_webhook(
+                listen="0.0.0.0",
+                port=int(os.environ.get('PORT', 5000)),
+                url_path="",
+                webhook_url=WEBHOOK_URL
+            )
+        else:
+            await self.app.updater.start_polling()
         
         logging.info("Bot is running...")
         try:
