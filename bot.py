@@ -1,11 +1,9 @@
-# Libraries
 import os
 import logging
 import asyncio
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import ta  # Using 'ta' instead of 'pandas_ta'
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from datetime import datetime, timedelta
@@ -172,9 +170,19 @@ class SaudiStockBot:
         finally:
             session.close()
 
+    @staticmethod
+    def ema(close, window):
+        # Simple EMA calculation
+        alpha = 2 / (window + 1.0)
+        ema = np.zeros_like(close)
+        ema[0] = close[0]
+        for t in range(1, len(close)):
+            ema[t] = alpha * close[t] + (1 - alpha) * ema[t-1]
+        return pd.Series(ema, index=close.index)
+
     def detect_golden_cross(self, data):
-        ema50 = ta.trend.ema_indicator(close=data['Close'], window=50)
-        ema200 = ta.trend.ema_indicator(close=data['Close'], window=200)
+        ema50 = self.ema(data['Close'], 50)
+        ema200 = self.ema(data['Close'], 200)
         return ema50.iloc[-1] > ema200.iloc[-1] and ema50.iloc[-2] <= ema200.iloc[-2]
 
     def detect_earthquake(self, data):
@@ -183,7 +191,9 @@ class SaudiStockBot:
 
     def detect_volcano(self, data):
         # Simplified Fibonacci detection - you might want to expand this
-        return data['Close'].iloc[-1] > data['Close'].iloc[-2] * 1.618  # 61.8% retracement
+        high = data['High'].max()
+        low = data['Low'].min()
+        return data['Close'].iloc[-1] > low + 0.618 * (high - low)  # 61.8% retracement
 
     def detect_lightning(self, data):
         # Simplified candlestick pattern detection
