@@ -93,6 +93,7 @@ class SaudiStockBot:
 
     # ------------------ Core Handlers ------------------
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        logging.info(f"Received /start command from {update.effective_user.id}")
         keyboard = [
             [InlineKeyboardButton("الإعدادات ⚙️", callback_data='settings'),
              InlineKeyboardButton("التقارير 📊", callback_data='reports')],
@@ -104,6 +105,7 @@ class SaudiStockBot:
         )
 
     async def settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        logging.info(f"Received /settings command from {update.effective_user.id}")
         session = Session()
         try:
             chat_id = str(update.effective_chat.id)
