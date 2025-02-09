@@ -394,4 +394,4 @@ if __name__ == '__main__':
         level=logging.INFO
     )
     bot = SaudiStockBot()
-    asyncio.run(bot.run()) 
+    asyncio.run(bot.run())
