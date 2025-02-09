@@ -405,11 +405,11 @@ class SaudiStockBot:
         
         # Ensure the webhook is set correctly
         await self.app.updater.start_webhook(
-            listen="0.0.0.0",
-            port=int(os.environ.get('PORT', 5000)),
-            url_path=TOKEN,
-            webhook_url=WEBHOOK_URL
-        )
+    listen="0.0.0.0",
+    port=int(os.environ.get('PORT', 5000)),
+    url_path=TOKEN,
+    webhook_url=WEBHOOK_URL
+)
         
         logging.info("Bot is running...")
         try:
