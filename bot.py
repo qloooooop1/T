@@ -3,6 +3,7 @@ import logging
 import asyncio
 import pandas as pd
 import numpy as np
+np.nan  # بدلاً من np.NaN
 import yfinance as yf
 import pandas_ta as ta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
