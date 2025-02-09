@@ -44,9 +44,6 @@ class Group(Base):
             'volcano': True, 'lightning': True
         },
         'protection': {
-            'max_messages': 200,
-            'antiflood': True,
-            'max_warnings': 3,
             'delete_phone_numbers': True,
             'delete_whatsapp_links': True,
             'delete_telegram_links': True,
@@ -96,7 +93,7 @@ class SaudiStockBot:
         keyboard = [
             [InlineKeyboardButton("الإعدادات ⚙️", callback_data='settings'),
              InlineKeyboardButton("التقارير 📊", callback_data='reports')],
-            [InlineKeyboardButton("الدعم الفني 📞", url='t.me/support')]
+            [InlineKeyboardButton("الدعم الفني 📞", url='https://t.me/support')]
         ]
         chat_id = str(update.effective_chat.id)
         if chat_id not in ACTIVATED_GROUPS:
@@ -145,11 +142,6 @@ class SaudiStockBot:
             f"- ساعية: {'✅' if settings['reports']['hourly'] else '❌'}\n"
             f"- يومية: {'✅' if settings['reports']['daily'] else '❌'}\n"
             f"- أسبوعية: {'✅' if settings['reports']['weekly'] else '❌'}\n\n"
-            f"🔍 الاستراتيجيات:\n"
-            f"- ذهبية: {'✅' if settings['strategies']['golden'] else '❌'}\n"
-            f"- زلزالية: {'✅' if settings['strategies']['earthquake'] else '❌'}\n"
-            f"- بركانية: {'✅' if settings['strategies']['volcano'] else '❌'}\n"
-            f"- برقية: {'✅' if settings['strategies']['lightning'] else '❌'}\n\n"
             f"🛡️ الحماية:\n"
             f"- حذف أرقام الجوالات: {'✅' if settings['protection']['delete_phone_numbers'] else '❌'}\n"
             f"- حذف روابط الواتساب: {'✅' if settings['protection']['delete_whatsapp_links'] else '❌'}\n"
@@ -160,8 +152,7 @@ class SaudiStockBot:
     def create_settings_buttons(self):
         return [
             [InlineKeyboardButton("تعديل التقارير", callback_data='edit_reports'),
-             InlineKeyboardButton("تعديل الاستراتيجيات", callback_data='edit_strategies')],
-            [InlineKeyboardButton("تعديل الحماية", callback_data='edit_protection')],
+             InlineKeyboardButton("تعديل الحماية", callback_data='edit_protection')],
             [InlineKeyboardButton("إغلاق", callback_data='close')]
         ]
 
@@ -522,7 +513,9 @@ class SaudiStockBot:
             mock_messages = [
                 f"@{message.from_user.username} يا حبيبي، ما نسمح بالإعلانات هنا! 😅",
                 f"@{message.from_user.username} شكلك جديد هنا، الإعلانات ممنوعة! 🚫",
-                f"@{message.from_user.username} الإعلانات ممنوعة، خلك في حدود الأدب! 😉"
+                f"@{message.from_user.username} الإعلانات ممنوعة، خلك في حدود الأدب! 😉",
+                f"@{message.from_user.username} يا عمري، الإعلانات ممنوعة! 🤣",
+                f"@{message.from_user.username} شكلك تحب الإعلانات، بس هنا ممنوع! 😂"
             ]
             await message.reply_text(random.choice(mock_messages))
         except Exception as e:
