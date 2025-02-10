@@ -176,9 +176,11 @@ class SaudiStockBot:
             buttons = [
                 [InlineKeyboardButton("تعديل الإعدادات", callback_data='edit_settings')],
                 [InlineKeyboardButton("رجوع ↩️", callback_data='main_menu')]
+            ]
             await update.message.reply_text(
                 settings_text,
                 reply_markup=InlineKeyboardMarkup(buttons)
+            )
             
         except Exception as e:
             logging.error(f"Settings Error: {str(e)}", exc_info=True)
@@ -212,7 +214,7 @@ class SaudiStockBot:
             ]
             await update.callback_query.message.edit_text(
                 "🛠 اختر الإعداد الذي تريد تعديله:",
-                reply_markup=InlineKeyboardMarkup(keyboard))
+                reply_markup=InlineKeyboardMarkup(keyboard)
         except Exception as e:
             logging.error(f"Edit Settings Error: {str(e)}", exc_info=True)
         finally:
