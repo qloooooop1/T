@@ -113,7 +113,13 @@ class SaudiStockBot:
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = str(update.effective_chat.id)
         if chat_id not in ACTIVATED_GROUPS:
-            await update.message.reply_text("⚠️ يلزم تفعيل المجموعة أولاً")
+            keyboard = [
+                [InlineKeyboardButton("الدعم الفني 📞", url='t.me/support')]
+            ]
+            await update.message.reply_text(
+                "⚠️ هذه القناة غير مسجلة. يرجى تفعيلها من خلال التواصل مع الدعم الفني.",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
             return
         keyboard = [
             [InlineKeyboardButton("الإعدادات ⚙️", callback_data='settings'),
