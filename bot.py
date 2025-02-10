@@ -214,7 +214,6 @@ class SaudiStockBot:
             await update.callback_query.message.edit_text(
                 "🛠 اختر الإعداد الذي تريد تعديله:",
                 reply_markup=InlineKeyboardMarkup(keyboard)
-            )
         except Exception as e:
             logging.error(f"Edit Settings Error: {str(e)}", exc_info=True)
         finally:
