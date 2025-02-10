@@ -180,7 +180,6 @@ class SaudiStockBot:
             await update.message.reply_text(
                 settings_text,
                 reply_markup=InlineKeyboardMarkup(buttons)
-            )
             
         except Exception as e:
             logging.error(f"Settings Error: {str(e)}", exc_info=True)
@@ -215,6 +214,7 @@ class SaudiStockBot:
             await update.callback_query.message.edit_text(
                 "🛠 اختر الإعداد الذي تريد تعديله:",
                 reply_markup=InlineKeyboardMarkup(keyboard)
+            )
         except Exception as e:
             logging.error(f"Edit Settings Error: {str(e)}", exc_info=True)
         finally:
@@ -270,13 +270,15 @@ class SaudiStockBot:
                 await update.message.chat.restrict_member(
                     user_id=user_id,
                     until_date=penalty.end_time,
-                    permissions=ChatPermissions(can_send_messages=False))
+                    permissions=ChatPermissions(can_send_messages=False)
+                )
             elif penalty.penalty_type == 'ban':
                 await update.message.chat.ban_member(user_id=user_id)
 
             await update.message.reply_text(
                 f"{update.message.from_user.mention_markdown()} {random.choice(self.sarcastic_messages)}",
-                parse_mode=ParseMode.MARKDOWN)
+                parse_mode=ParseMode.MARKDOWN
+            )
         except Exception as e:
             logging.error(f"Spam Handling Error: {str(e)}", exc_info=True)
         finally:
@@ -482,7 +484,8 @@ class SaudiStockBot:
                     await self.app.bot.restrict_chat_member(
                         chat_id=penalty.user.group.chat_id,
                         user_id=penalty.user.user_id,
-                        permissions=ChatPermissions.all_permissions())
+                        permissions=ChatPermissions.all_permissions()
+                    )
                 session.delete(penalty)
             session.commit()
         except Exception as e:
