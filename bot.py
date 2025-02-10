@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 from datetime import datetime, timedelta
 import pytz
 from sqlalchemy import create_engine, Column, Integer, String, JSON, DateTime, Boolean, Float, ForeignKey, Text
@@ -13,8 +13,9 @@ from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from telegram.constants import ParseMode
+import re
 
-# ------------------ Configuration ------------------
+# Configuration
 TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 WEBHOOK_URL = os.getenv('WEBHOOK_URL')
 SAUDI_TIMEZONE = pytz.timezone('Asia/Riyadh')
@@ -22,13 +23,14 @@ STOCK_SYMBOLS = ['1211.SR', '2222.SR', '3030.SR', '4200.SR']
 OWNER_ID = int(os.getenv('OWNER_ID', 0))
 DATABASE_URL = os.getenv('DATABASE_URL').replace("postgres://", "postgresql://", 1)
 ACTIVATED_GROUPS = os.getenv('ACTIVATED_GROUPS', '').split(',')
+MAX_QUERIES_PER_DAY = 5  # Example value, can be set in the admin panel
 
 # Initialize database
 Base = declarative_base()
 engine = create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
 
-# ------------------ Database Models ------------------
+# Database Models
 class Group(Base):
     __tablename__ = 'groups'
     id = Column(Integer, primary_key=True)
@@ -58,6 +60,12 @@ class Opportunity(Base):
     group = relationship('Group', back_populates='opportunities')
     created_at = Column(DateTime, default=lambda: datetime.now(SAUDI_TIMEZONE))
 
+class UserQuery(Base):
+    __tablename__ = 'user_queries'
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String)
+    query_date = Column(DateTime, default=lambda: datetime.now(SAUDI_TIMEZONE))
+
 Base.metadata.create_all(engine)
 
 class SaudiStockBot:
@@ -67,26 +75,23 @@ class SaudiStockBot:
         self.setup_handlers()
         self.setup_scheduler()
 
-    # ------------------ Handlers Setup ------------------
     def setup_handlers(self):
         self.app.add_handler(CommandHandler('start', self.start))
         self.app.add_handler(CommandHandler('settings', self.settings))
         self.app.add_handler(CommandHandler('approve', self.approve_group))
         self.app.add_handler(CallbackQueryHandler(self.handle_button))
+        self.app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), self.handle_message))
 
-    # ------------------ Scheduler Setup ------------------
     def setup_scheduler(self):
         self.scheduler.add_job(self.check_opportunities, 'interval', minutes=5)
         self.scheduler.add_job(self.send_daily_report, CronTrigger(hour=16, minute=0, timezone=SAUDI_TIMEZONE))
         self.scheduler.start()
 
-    # ------------------ Core Functionality ------------------
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = str(update.effective_chat.id)
         if chat_id not in ACTIVATED_GROUPS:
             await update.message.reply_text("⚠️ يلزم تفعيل المجموعة أولاً")
             return
-
         keyboard = [
             [InlineKeyboardButton("الإعدادات ⚙️", callback_data='settings'),
              InlineKeyboardButton("التقارير 📊", callback_data='reports')],
@@ -102,12 +107,10 @@ class SaudiStockBot:
         try:
             message = update.message or update.callback_query.message
             chat_id = str(update.effective_chat.id)
-            
             group = session.query(Group).filter_by(chat_id=chat_id).first()
             if not group or not group.is_approved:
                 await message.reply_text("⚠️ يلزم تفعيل المجموعة أولاً")
                 return
-
             settings_text = (
                 "⚙️ إعدادات المجموعة:\n\n"
                 f"📊 التقارير:\n"
@@ -120,20 +123,17 @@ class SaudiStockBot:
                 f"- بركانية: {'✅' if group.settings['strategies']['volcano'] else '❌'}\n"
                 f"- برقية: {'✅' if group.settings['strategies']['lightning'] else '❌'}"
             )
-            
             buttons = [
                 [InlineKeyboardButton("تعديل التقارير", callback_data='edit_reports'),
                  InlineKeyboardButton("تعديل الاستراتيجيات", callback_data='edit_strategies')],
                 [InlineKeyboardButton("إغلاق", callback_data='close')]
             ]
             await message.reply_text(settings_text, reply_markup=InlineKeyboardMarkup(buttons))
-            
         except Exception as e:
             logging.error(f"Settings Error: {str(e)}", exc_info=True)
         finally:
             session.close()
 
-    # ------------------ Opportunity Detection ------------------
     async def check_opportunities(self):
         session = Session()
         try:
@@ -143,26 +143,20 @@ class SaudiStockBot:
                     if data.empty or 'Close' not in data.columns:
                         logging.error(f"No data available for {symbol}")
                         continue
-
                     # Golden Cross Strategy
                     if self.detect_golden_cross(data):
                         await self.create_opportunity(symbol, 'golden', data)
-                    
                     # Earthquake Strategy
                     if self.detect_earthquake(data):
                         await self.create_opportunity(symbol, 'earthquake', data)
-                    
                     # Volcano Strategy
                     if self.detect_volcano(data):
                         await self.create_opportunity(symbol, 'volcano', data)
-                    
                     # Lightning Strategy
                     if self.detect_lightning(data):
                         await self.create_opportunity(symbol, 'lightning', data)
-
                 except Exception as e:
                     logging.error(f"Error processing {symbol}: {str(e)}", exc_info=True)
-
         except Exception as e:
             logging.error(f"Opportunity Error: {str(e)}", exc_info=True)
         finally:
@@ -187,17 +181,15 @@ class SaudiStockBot:
         return data['Close'].iloc[-1] > low + 0.618 * (high - low)
 
     def detect_lightning(self, data):
-        return (data['High'].iloc[-1] - data['Low'].iloc[-1] > 
+        return (data['High'].iloc[-1] - data['Low'].iloc[-1] >
                 data['Close'].iloc[-2] * 0.05)
 
-    # ------------------ Opportunity Management ------------------
     async def create_opportunity(self, symbol, strategy, data):
         session = Session()
         try:
             entry_price = data['Close'].iloc[-1]
             stop_loss = self.calculate_stop_loss(strategy, data)
             targets = self.calculate_targets(strategy, entry_price)
-            
             opp = Opportunity(
                 symbol=symbol,
                 strategy=strategy,
@@ -209,7 +201,6 @@ class SaudiStockBot:
             session.add(opp)
             session.commit()
             await self.send_alert_to_groups(opp)
-            
         except Exception as e:
             logging.error(f"Create Opportunity Error: {str(e)}", exc_info=True)
         finally:
@@ -232,7 +223,6 @@ class SaudiStockBot:
         }
         return strategies.get(strategy, [])
 
-    # ------------------ Alert System ------------------
     async def send_alert_to_groups(self, opportunity):
         session = Session()
         try:
@@ -240,11 +230,9 @@ class SaudiStockBot:
                 Group.is_approved == True,
                 Group.settings['strategies'][opportunity.strategy].as_boolean()
             ).all()
-            
             if not groups:
                 logging.info("No active groups for this strategy")
                 return
-
             text = (
                 f"🚨 إشارة {self.get_strategy_name(opportunity.strategy)}\n"
                 f"📈 السهم: {opportunity.symbol}\n"
@@ -252,7 +240,6 @@ class SaudiStockBot:
                 f"🎯 الأهداف: {', '.join(map(str, opportunity.targets))}\n"
                 f"🛑 وقف الخسارة: {opportunity.stop_loss:.2f}"
             )
-            
             for group in groups:
                 try:
                     await self.app.bot.send_message(
@@ -262,19 +249,16 @@ class SaudiStockBot:
                     )
                 except Exception as e:
                     logging.error(f"Failed to send alert to group {group.chat_id}: {e}")
-
         except Exception as e:
             logging.error(f"Alert Error: {str(e)}", exc_info=True)
         finally:
             session.close()
 
-    # ------------------ Reporting System ------------------
     async def send_daily_report(self):
         session = Session()
         try:
             report = "📊 التقرير اليومي:\n\n"
             top_gainers = await self.get_top_movers('1d')
-            
             if not top_gainers:
                 report += "⚠️ لا توجد بيانات متاحة اليوم"
             else:
@@ -282,12 +266,10 @@ class SaudiStockBot:
                 report += "\n".join([f"{i+1}. {sym}: {chg}%" for i, (sym, chg) in enumerate(top_gainers[:5])])
                 report += "\n\n🔻 أقل 5 شركات:\n"
                 report += "\n".join([f"{i+1}. {sym}: {chg}%" for i, (sym, chg) in enumerate(top_gainers[-5:])])
-
             groups = session.query(Group).filter(
                 Group.is_approved == True,
                 Group.settings['reports']['daily'].as_boolean()
             ).all()
-            
             for group in groups:
                 try:
                     await self.app.bot.send_message(
@@ -296,7 +278,6 @@ class SaudiStockBot:
                     )
                 except Exception as e:
                     logging.error(f"Failed to send report to group {group.chat_id}: {e}")
-
         except Exception as e:
             logging.error(f"Report Error: {str(e)}", exc_info=True)
         finally:
@@ -315,29 +296,23 @@ class SaudiStockBot:
                 logging.error(f"Error getting data for {symbol}: {e}")
         return sorted(movers, key=lambda x: x[1], reverse=True)
 
-    # ------------------ Admin Commands ------------------
     async def approve_group(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_user.id != OWNER_ID:
             await update.message.reply_text("⛔ صلاحية مطلوبة!")
             return
-
         try:
             _, chat_id = update.message.text.split()
             session = Session()
             group = session.query(Group).filter_by(chat_id=chat_id).first()
-            
             if not group:
                 group = Group(chat_id=chat_id)
                 session.add(group)
-            
             group.is_approved = True
             group.subscription_end = datetime.now(SAUDI_TIMEZONE) + timedelta(days=30)
             session.commit()
-            
             if chat_id not in ACTIVATED_GROUPS:
                 ACTIVATED_GROUPS.append(chat_id)
                 os.environ['ACTIVATED_GROUPS'] = ','.join(ACTIVATED_GROUPS)
-            
             await update.message.reply_text(f"✅ تم تفعيل المجموعة {chat_id}")
             await self.app.bot.send_message(
                 chat_id=chat_id,
@@ -348,7 +323,6 @@ class SaudiStockBot:
         finally:
             session.close()
 
-    # ------------------ Utilities ------------------
     def get_strategy_name(self, strategy):
         names = {
             'golden': 'ذهبية 💰',
@@ -358,11 +332,9 @@ class SaudiStockBot:
         }
         return names.get(strategy, 'غير معروفة')
 
-    # ------------------ Button Handlers ------------------
     async def handle_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
-        
         if query.data == 'settings':
             await self.settings(update, context)
         elif query.data == 'edit_reports':
@@ -377,7 +349,6 @@ class SaudiStockBot:
             if not group:
                 await query.message.reply_text("⚠️ المجموعة غير مسجلة")
                 return
-
             keyboard = [
                 [
                     InlineKeyboardButton(
@@ -406,11 +377,44 @@ class SaudiStockBot:
         finally:
             session.close()
 
-    # ------------------ Bot Execution ------------------
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        message = update.message.text
+        user_id = str(update.effective_user.id)
+        if self.is_spam(message):
+            await self.delete_and_reply_sarcastically(update, context)
+            return
+        if message.isdigit():
+            stock_code = message
+            analysis = self.analyze_stock(stock_code)
+            await update.message.reply_text(analysis)
+
+    def is_spam(self, message):
+        saudi_phone_pattern = r"(?:\+?966|0)?\d{10}"
+        spam_patterns = [saudi_phone_pattern, r"whatsapp", r"telegram"]
+        for pattern in spam_patterns:
+            if re.search(pattern, message, re.IGNORECASE):
+                return True
+        return False
+
+    async def delete_and_reply_sarcastically(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        sarcastic_replies = [
+            "لا تزعجنا برقمك مرة أخرى!",
+            "رقم جوال؟ هل تريد أن نبيع لك شيء ما؟",
+            "من فضلك، احترم خصوصيتنا.",
+            "لا نريد أي رسائل إعلانية هنا.",
+            "هل تعتقد أننا نحتاج إلى رقمك؟",
+            "شكراً لك، لكننا لا نحتاج إلى خدماتك."
+        ]
+        await update.message.delete()
+        await update.message.reply_text(sarcastic_replies[np.random.randint(len(sarcastic_replies))])
+
+    def analyze_stock(self, stock_code):
+        # Implement your stock analysis logic here
+        return f"📊 *تحليل سهم {stock_code}*..."
+
     async def run(self):
         await self.app.initialize()
         await self.app.start()
-        
         if WEBHOOK_URL and os.getenv('PORT'):
             await self.app.updater.start_webhook(
                 listen="0.0.0.0",
@@ -420,7 +424,6 @@ class SaudiStockBot:
             )
         else:
             await self.app.updater.start_polling()
-        
         logging.info("Bot is running...")
         try:
             await asyncio.Event().wait()
