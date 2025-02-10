@@ -73,7 +73,6 @@ class SaudiStockBot:
         self.app = Application.builder().token(TOKEN).build()
         self.scheduler = AsyncIOScheduler(timezone=SAUDI_TIMEZONE)
         self.setup_handlers()
-        self.setup_scheduler()
 
     def setup_handlers(self):
         self.app.add_handler(CommandHandler('start', self.start))
@@ -81,6 +80,30 @@ class SaudiStockBot:
         self.app.add_handler(CommandHandler('approve', self.approve_group))
         self.app.add_handler(CallbackQueryHandler(self.handle_button))
         self.app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), self.handle_message))
+
+    async def run(self):
+        await self.app.initialize()
+        await self.app.start()
+        if WEBHOOK_URL and os.getenv('PORT'):
+            await self.app.updater.start_webhook(
+                listen="0.0.0.0",
+                port=int(os.getenv('PORT')),
+                url_path="",
+                webhook_url=WEBHOOK_URL
+            )
+        else:
+            await self.app.updater.start_polling()
+        
+        # Setup scheduler after the event loop is running
+        self.setup_scheduler()
+
+        logging.info("Bot is running...")
+        try:
+            await asyncio.Event().wait()
+        except KeyboardInterrupt:
+            logging.info("Bot is shutting down...")
+            await self.app.stop()
+            self.scheduler.shutdown(wait=False)
 
     def setup_scheduler(self):
         self.scheduler.add_job(self.check_opportunities, 'interval', minutes=5)
@@ -411,26 +434,6 @@ class SaudiStockBot:
     def analyze_stock(self, stock_code):
         # Implement your stock analysis logic here
         return f"📊 *تحليل سهم {stock_code}*..."
-
-    async def run(self):
-        await self.app.initialize()
-        await self.app.start()
-        if WEBHOOK_URL and os.getenv('PORT'):
-            await self.app.updater.start_webhook(
-                listen="0.0.0.0",
-                port=int(os.getenv('PORT')),
-                url_path="",
-                webhook_url=WEBHOOK_URL
-            )
-        else:
-            await self.app.updater.start_polling()
-        logging.info("Bot is running...")
-        try:
-            await asyncio.Event().wait()
-        except KeyboardInterrupt:
-            logging.info("Bot is shutting down...")
-            await self.app.stop()
-            self.scheduler.shutdown(wait=False)
 
 if __name__ == '__main__':
     logging.basicConfig(
