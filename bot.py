@@ -14,6 +14,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from telegram.constants import ParseMode
 import re
+import random
 
 # ------------------ Configuration ------------------
 TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -22,7 +23,6 @@ SAUDI_TIMEZONE = pytz.timezone('Asia/Riyadh')
 STOCK_SYMBOLS = ['1211.SR', '2222.SR', '3030.SR', '4200.SR']
 OWNER_ID = int(os.getenv('OWNER_ID', 0))
 DATABASE_URL = os.getenv('DATABASE_URL').replace("postgres://", "postgresql://", 1)
-ACTIVATED_GROUPS = os.getenv('ACTIVATED_GROUPS', '').split(',')
 
 # Initialize database
 Base = declarative_base()
@@ -130,24 +130,33 @@ class SaudiStockBot:
         await asyncio.Event().wait()
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        chat_id = str(update.effective_chat.id)
-        if chat_id not in ACTIVATED_GROUPS:
-            keyboard = [[InlineKeyboardButton("الدعم الفني 📞", url='t.me/support')]]
+        session = Session()
+        try:
+            chat_id = str(update.effective_chat.id)
+            group = session.query(Group).filter_by(chat_id=chat_id).first()
+            
+            if not group or not group.is_approved:
+                keyboard = [[InlineKeyboardButton("تفعيل المجموعة ✅", callback_data='request_approval')],
+                            [InlineKeyboardButton("الدعم الفني 📞", url='t.me/support')]]
+                await update.message.reply_text(
+                    "⚠️ هذه المجموعة غير مفعلة. يرجى طلب التفعيل من المالك.",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+                return
+            
+            keyboard = [
+                [InlineKeyboardButton("الإعدادات ⚙️", callback_data='settings'),
+                 InlineKeyboardButton("التقارير 📊", callback_data='reports')],
+                [InlineKeyboardButton("الدعم الفني 📞", url='t.me/support')]
+            ]
             await update.message.reply_text(
-                "⚠️ هذه القناة غير مسجلة. يرجى تفعيلها من خلال التواصل مع الدعم الفني.",
+                "مرحبًا بكم في بوت الأسهم السعودية المتقدم! 📈",
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
-            return
-        
-        keyboard = [
-            [InlineKeyboardButton("الإعدادات ⚙️", callback_data='settings'),
-             InlineKeyboardButton("التقارير 📊", callback_data='reports')],
-            [InlineKeyboardButton("الدعم الفني 📞", url='t.me/support')]
-        ]
-        await update.message.reply_text(
-            "مرحبًا بكم في بوت الأسهم السعودية المتقدم! 📈",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        except Exception as e:
+            logging.error(f"Start Error: {str(e)}", exc_info=True)
+        finally:
+            session.close()
 
     async def settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         session = Session()
@@ -193,9 +202,26 @@ class SaudiStockBot:
             await self.settings(update, context)
         elif query.data == 'edit_settings':
             await self.edit_settings(update)
+        elif query.data == 'request_approval':
+            await self.request_approval(update)
         elif query.data == 'main_menu':
             await query.message.delete()
             await self.start(update, context)
+
+    async def request_approval(self, update: Update):
+        try:
+            chat_id = update.effective_chat.id
+            await self.app.bot.send_message(
+                OWNER_ID,
+                f"طلب تفعيل مجموعة جديدة:\n"
+                f"معرف المجموعة: {chat_id}\n"
+                f"اسم المجموعة: {update.effective_chat.title}\n\n"
+                f"استخدم الأمر التالي للتفعيل:\n"
+                f"/approve {chat_id}"
+            )
+            await update.callback_query.message.reply_text("✅ تم إرسال طلب التفعيل للمالك")
+        except Exception as e:
+            logging.error(f"Approval Request Error: {str(e)}", exc_info=True)
 
     async def edit_settings(self, update: Update):
         session = Session()
@@ -226,7 +252,7 @@ class SaudiStockBot:
             await self.handle_spam(update)
             return
         
-        if re.match(r'^\d{4}$', message):
+        if re.fullmatch(r'\d{4}', message):
             await self.handle_stock_analysis(user_id, message, update)
 
     def is_spam(self, message):
@@ -295,7 +321,7 @@ class SaudiStockBot:
                 return
 
             # Perform analysis
-            analysis = self.analyze_stock(stock_code)
+            analysis = await self.analyze_stock(stock_code)
             sent_message = await update.message.reply_text(analysis, parse_mode=ParseMode.MARKDOWN)
             
             # Update user
@@ -309,13 +335,17 @@ class SaudiStockBot:
 
         except Exception as e:
             logging.error(f"Stock Analysis Error: {str(e)}", exc_info=True)
+            await update.message.reply_text("⚠️ حدث خطأ في تحليل السهم، يرجى المحاولة لاحقًا")
         finally:
             session.close()
 
-    def analyze_stock(self, stock_code):
+    async def analyze_stock(self, stock_code):
         try:
             stock = yf.Ticker(f"{stock_code}.SR")
             hist = stock.history(period="1mo")
+            
+            if hist.empty:
+                return "⚠️ لا توجد بيانات متاحة لهذا السهم"
             
             analysis = f"""
 📊 *تحليل فني ومالي لسهم {stock_code}*
@@ -350,7 +380,7 @@ class SaudiStockBot:
         try:
             for symbol in STOCK_SYMBOLS:
                 data = yf.download(symbol, period='3d', interval='1h')
-                if data.empty:
+                if data.empty or len(data) < 200:
                     continue
 
                 if self.detect_golden_cross(data):
@@ -369,7 +399,7 @@ class SaudiStockBot:
     def detect_golden_cross(self, data):
         ema50 = data['Close'].ewm(span=50, adjust=False).mean()
         ema200 = data['Close'].ewm(span=200, adjust=False).mean()
-        return ema50.iloc[-1] > ema200.iloc[-1] and ema50.iloc[-2] <= ema200.iloc[-2]
+        return (ema50.iloc[-1] > ema200.iloc[-1]) & (ema50.iloc[-2] <= ema200.iloc[-2])
 
     def detect_earthquake(self, data):
         return (data['Close'].iloc[-1] > data['High'].rolling(14).max().iloc[-2] 
@@ -577,10 +607,6 @@ class SaudiStockBot:
             
             group.is_approved = True
             session.commit()
-            
-            if chat_id not in ACTIVATED_GROUPS:
-                ACTIVATED_GROUPS.append(chat_id)
-                os.environ['ACTIVATED_GROUPS'] = ','.join(ACTIVATED_GROUPS)
             
             await update.message.reply_text(f"✅ تم تفعيل المجموعة {chat_id}")
             await self.app.bot.send_message(
