@@ -157,8 +157,8 @@ class SaudiStockBot:
             settings_text = (
                 "⚙️ إعدادات المجموعة:\n\n"
                 f"📊 الحد الأقصى للاستفسارات اليومية: {group.settings['security']['max_queries']}\n"
-                f"🔨 نوع العقوبة: {group.settings['penalty']['type'].capitalize()}\n"
-                f"⏳ مدة العقوبة: {group.settings['penalty']['duration']} ساعة\n"
+                f"🔨 نوع العقوبة: {group.settings['security']['penalty']['type'].capitalize()}\n"
+                f"⏳ مدة العقوبة: {group.settings['security']['penalty']['duration']} ساعة\n"
                 f"📈 الاستراتيجيات المفعلة:\n"
                 f"- ذهبية: {'✅' if group.settings['strategies']['golden'] else '❌'}\n"
                 f"- زلزالية: {'✅' if group.settings['strategies']['earthquake'] else '❌'}\n"
@@ -243,9 +243,9 @@ class SaudiStockBot:
                 session.commit()
             penalty = Penalty(
                 user_id=user.id,
-                penalty_type=group.settings['penalty']['type'],
+                penalty_type=group.settings['security']['penalty']['type'],
                 start_time=datetime.now(SAUDI_TIMEZONE),
-                end_time=datetime.now(SAUDI_TIMEZONE) + timedelta(hours=group.settings['penalty']['duration'])
+                end_time=datetime.now(SAUDI_TIMEZONE) + timedelta(hours=group.settings['security']['penalty']['duration'])
             )
             session.add(penalty)
             session.commit()
@@ -461,47 +461,47 @@ class SaudiStockBot:
         finally:
             session.close()
 
-    # Add the missing function
     async def send_daily_report(self):
         session = Session()
         try:
             groups = session.query(Group).filter(Group.chat_id.in_(ACTIVATED_GROUPS)).all()
             for group in groups:
-                report_text = (
-                    f"📊 *التقرير اليومي*\n"
-                    f"📅 التاريخ: {datetime.now(SAUDI_TIMEZONE).strftime('%Y-%m-%d')}\n"
-                    f"⏰ الوقت: {datetime.now(SAUDI_TIMEZONE).strftime('%H:%M')}\n\n"
-                    f"📈 عدد الفرص اليوم: {len(group.opportunities)}\n"
-                    f"👥 عدد المستخدمين النشطين: {session.query(User).filter_by(group_id=group.id).count()}"
-                )
-                await self.app.bot.send_message(
-                    chat_id=group.chat_id,
-                    text=report_text,
-                    parse_mode=ParseMode.MARKDOWN
-                )
+                if group.settings['reports']['daily']:
+                    report_text = (
+                        f"📊 *التقرير اليومي*\n"
+                        f"📅 التاريخ: {datetime.now(SAUDI_TIMEZONE).strftime('%Y-%m-%d')}\n"
+                        f"⏰ الوقت: {datetime.now(SAUDI_TIMEZONE).strftime('%H:%M')}\n\n"
+                        f"📈 عدد الفرص اليوم: {len(group.opportunities)}\n"
+                        f"👥 عدد المستخدمين النشطين: {session.query(User).filter_by(group_id=group.id).count()}"
+                    )
+                    await self.app.bot.send_message(
+                        chat_id=group.chat_id,
+                        text=report_text,
+                        parse_mode=ParseMode.MARKDOWN
+                    )
         except Exception as e:
             logging.error(f"Daily Report Error: {str(e)}", exc_info=True)
         finally:
             session.close()
 
-    # Add the missing function
     async def send_weekly_report(self):
         session = Session()
         try:
             groups = session.query(Group).filter(Group.chat_id.in_(ACTIVATED_GROUPS)).all()
             for group in groups:
-                report_text = (
-                    f"📊 *التقرير الأسبوعي*\n"
-                    f"📅 الأسبوع: {datetime.now(SAUDI_TIMEZONE).strftime('%Y-%U')}\n"
-                    f"⏰ الوقت: {datetime.now(SAUDI_TIMEZONE).strftime('%H:%M')}\n\n"
-                    f"📈 عدد الفرص الأسبوعية: {len(group.opportunities)}\n"
-                    f"👥 عدد المستخدمين النشطين: {session.query(User).filter_by(group_id=group.id).count()}"
-                )
-                await self.app.bot.send_message(
-                    chat_id=group.chat_id,
-                    text=report_text,
-                    parse_mode=ParseMode.MARKDOWN
-                )
+                if group.settings['reports']['weekly']:
+                    report_text = (
+                        f"📊 *التقرير الأسبوعي*\n"
+                        f"📅 الأسبوع: {datetime.now(SAUDI_TIMEZONE).strftime('%Y-%U')}\n"
+                        f"⏰ الوقت: {datetime.now(SAUDI_TIMEZONE).strftime('%H:%M')}\n\n"
+                        f"📈 عدد الفرص الأسبوعية: {len(group.opportunities)}\n"
+                        f"👥 عدد المستخدمين النشطين: {session.query(User).filter_by(group_id=group.id).count()}"
+                    )
+                    await self.app.bot.send_message(
+                        chat_id=group.chat_id,
+                        text=report_text,
+                        parse_mode=ParseMode.MARKDOWN
+                    )
         except Exception as e:
             logging.error(f"Weekly Report Error: {str(e)}", exc_info=True)
         finally:
