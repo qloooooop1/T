@@ -484,6 +484,29 @@ class SaudiStockBot:
         finally:
             session.close()
 
+    # Add the missing function
+    async def send_weekly_report(self):
+        session = Session()
+        try:
+            groups = session.query(Group).filter(Group.chat_id.in_(ACTIVATED_GROUPS)).all()
+            for group in groups:
+                report_text = (
+                    f"📊 *التقرير الأسبوعي*\n"
+                    f"📅 الأسبوع: {datetime.now(SAUDI_TIMEZONE).strftime('%Y-%U')}\n"
+                    f"⏰ الوقت: {datetime.now(SAUDI_TIMEZONE).strftime('%H:%M')}\n\n"
+                    f"📈 عدد الفرص الأسبوعية: {len(group.opportunities)}\n"
+                    f"👥 عدد المستخدمين النشطين: {session.query(User).filter_by(group_id=group.id).count()}"
+                )
+                await self.app.bot.send_message(
+                    chat_id=group.chat_id,
+                    text=report_text,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+        except Exception as e:
+            logging.error(f"Weekly Report Error: {str(e)}", exc_info=True)
+        finally:
+            session.close()
+
 if __name__ == '__main__':
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
