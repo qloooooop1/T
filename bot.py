@@ -106,12 +106,14 @@ class SaudiStockBot:
     async def run(self):
         await self.app.initialize()
         self.scheduler.start()
+
         # Setup scheduled jobs
         self.scheduler.add_job(self.check_opportunities, 'interval', minutes=5)
         self.scheduler.add_job(self.send_daily_report, CronTrigger(hour=16, minute=0, timezone=SAUDI_TIMEZONE))
         self.scheduler.add_job(self.send_weekly_report, CronTrigger(day_of_week='thu', hour=16, minute=0, timezone=SAUDI_TIMEZONE))
         self.scheduler.add_job(self.reset_daily_queries, CronTrigger(hour=0, timezone=SAUDI_TIMEZONE))
         self.scheduler.add_job(self.check_penalties, 'interval', minutes=30)
+
         if WEBHOOK_URL and os.getenv('PORT'):
             await self.app.updater.start_webhook(
                 listen="0.0.0.0",
@@ -121,6 +123,7 @@ class SaudiStockBot:
             )
         else:
             await self.app.updater.start_polling()
+
         logging.info("Bot is running...")
         await asyncio.Event().wait()
 
@@ -133,6 +136,7 @@ class SaudiStockBot:
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
             return
+
         keyboard = [
             [InlineKeyboardButton("الإعدادات ⚙️", callback_data='settings'),
              InlineKeyboardButton("التقارير 📊", callback_data='reports')],
@@ -149,11 +153,13 @@ class SaudiStockBot:
             chat_id = str(update.effective_chat.id)
             if chat_id not in ACTIVATED_GROUPS:
                 return
+
             group = session.query(Group).filter_by(chat_id=chat_id).first()
             if not group:
                 group = Group(chat_id=chat_id)
                 session.add(group)
                 session.commit()
+
             settings_text = (
                 "⚙️ إعدادات المجموعة:\n\n"
                 f"📊 الحد الأقصى للاستفسارات اليومية: {group.settings['security']['max_queries']}\n"
@@ -195,6 +201,7 @@ class SaudiStockBot:
             chat_id = str(update.callback_query.message.chat.id)
             if chat_id not in ACTIVATED_GROUPS:
                 return
+
             keyboard = [
                 [InlineKeyboardButton("تعديل عدد الاستفسارات", callback_data='edit_queries')],
                 [InlineKeyboardButton("تعديل نوع العقوبة", callback_data='edit_penalty')],
@@ -214,11 +221,14 @@ class SaudiStockBot:
         chat_id = str(update.effective_chat.id)
         if chat_id not in ACTIVATED_GROUPS:
             return
+
         message = update.message.text
         user_id = str(update.effective_user.id)
+
         if self.is_spam(message):
             await self.handle_spam(update)
             return
+
         if re.fullmatch(r'^\d{4}$', message):
             await self.handle_stock_analysis(user_id, message, update)
 
@@ -241,6 +251,7 @@ class SaudiStockBot:
                 user = User(user_id=user_id, group_id=group.id)
                 session.add(user)
                 session.commit()
+
             penalty = Penalty(
                 user_id=user.id,
                 penalty_type=group.settings['security']['penalty']['type'],
@@ -249,6 +260,7 @@ class SaudiStockBot:
             )
             session.add(penalty)
             session.commit()
+
             if penalty.penalty_type == 'mute':
                 await update.message.chat.restrict_member(
                     user_id=user_id,
@@ -257,6 +269,7 @@ class SaudiStockBot:
                 )
             elif penalty.penalty_type == 'ban':
                 await update.message.chat.ban_member(user_id=user_id)
+
             await update.message.reply_text(
                 f"{update.message.from_user.mention_markdown()} {random.choice(self.sarcastic_messages)}",
                 parse_mode=ParseMode.MARKDOWN
@@ -275,14 +288,17 @@ class SaudiStockBot:
                 user = User(user_id=user_id, group_id=group.id)
                 session.add(user)
                 session.commit()
+
             if user.daily_queries >= group.settings['security']['max_queries']:
                 await update.message.reply_text(random.choice(self.sarcastic_messages))
                 return
+
             analysis = await self.analyze_stock(stock_code)
             sent_message = await update.message.reply_text(analysis, parse_mode=ParseMode.MARKDOWN)
             user.daily_queries += 1
             user.last_query = datetime.now(SAUDI_TIMEZONE)
             session.commit()
+
             await asyncio.sleep(120)
             await sent_message.delete()
         except Exception as e:
@@ -297,6 +313,7 @@ class SaudiStockBot:
             hist = stock.history(period="1mo")
             if hist.empty:
                 return "⚠️ لا توجد بيانات متاحة لهذا السهم"
+
             analysis = f"""
 📊 *تحليل فني ومالي لسهم {stock_code}*
 *المؤشرات الفنية:*
@@ -330,6 +347,7 @@ class SaudiStockBot:
                 data = yf.download(symbol, period='3d', interval='1h')
                 if data.empty or len(data) < 200:
                     continue
+
                 if self.detect_golden_cross(data):
                     await self.create_opportunity(symbol, 'golden', data)
                 if self.detect_earthquake(data):
@@ -406,6 +424,7 @@ class SaudiStockBot:
                 Group.chat_id.in_(ACTIVATED_GROUPS),
                 Group.settings['strategies'][opportunity.strategy].as_boolean()
             ).all()
+
             text = (
                 f"🚨 إشارة {self.get_strategy_name(opportunity.strategy)}\n"
                 f"📈 السهم: {opportunity.symbol}\n"
@@ -413,6 +432,7 @@ class SaudiStockBot:
                 f"🎯 الأهداف: {', '.join(map(str, opportunity.targets))}\n"
                 f"🛑 وقف الخسارة: {opportunity.stop_loss:.2f}"
             )
+
             for group in groups:
                 await self.app.bot.send_message(
                     chat_id=group.chat_id,
@@ -513,4 +533,4 @@ if __name__ == '__main__':
         level=logging.INFO
     )
     bot = SaudiStockBot()
-    asyncio.run(bot.run()) 
+    asyncio.run(bot.run())
