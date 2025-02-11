@@ -5,6 +5,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from datetime import datetime, timedelta
 import pytz
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import create_engine, Column, Integer, String, JSON, DateTime, Boolean, Float, ForeignKey
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
