@@ -1,24 +1,17 @@
 import os
 import logging
 import asyncio
-import pandas as pd
-import numpy as np
-import yfinance as yf
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from datetime import datetime, timedelta
 import pytz
-from sqlalchemy import create_engine, Column, Integer, String, JSON, DateTime, Boolean, Float, ForeignKey, Text
+from sqlalchemy import create_engine, Column, Integer, String, JSON, DateTime, Boolean, Float, ForeignKey
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
-from telegram.constants import ParseMode
-import re
-import random
 
 # Configuration
 TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 WEBHOOK_URL = os.getenv('WEBHOOK_URL')
+PORT = int(os.getenv('PORT', 8000))
 SAUDI_TIMEZONE = pytz.timezone('Asia/Riyadh')
 STOCK_SYMBOLS = ['1211.SR', '2222.SR', '3030.SR', '4200.SR']
 ACTIVATED_GROUPS = set(os.getenv('ACTIVATED_GROUPS', '').split(','))
@@ -87,17 +80,10 @@ class SaudiStockBot:
     def __init__(self):
         self.app = Application.builder().token(TOKEN).build()
         self.scheduler = AsyncIOScheduler(timezone=SAUDI_TIMEZONE)
-        self.sarcastic_messages = [
-            "لا تزعجنا برقمك مرة أخرى!",
-            "رقم جوال؟ هل تريد أن نبيع لك شيء ما؟",
-            "من فضلك، احترم خصوصيتنا.",
-            "لا نريد أي رسائل إعلانية هنا.",
-            "هل تعتقد أننا نحتاج إلى رقمك؟",
-            "شكراً لك، لكننا لا نحتاج إلى خدماتك."
-        ]
         self.setup_handlers()
 
     def setup_handlers(self):
+        # Command Handlers
         self.app.add_handler(CommandHandler('start', self.start))
         self.app.add_handler(CommandHandler('settings', self.settings))
         self.app.add_handler(CallbackQueryHandler(self.handle_button))
@@ -109,23 +95,32 @@ class SaudiStockBot:
 
         # Setup scheduled jobs
         self.scheduler.add_job(self.check_opportunities, 'interval', minutes=5)
-        self.scheduler.add_job(self.send_daily_report, CronTrigger(hour=16, minute=0, timezone=SAUDI_TIMEZONE))
-        self.scheduler.add_job(self.send_weekly_report, CronTrigger(day_of_week='thu', hour=16, minute=0, timezone=SAUDI_TIMEZONE))
-        self.scheduler.add_job(self.reset_daily_queries, CronTrigger(hour=0, timezone=SAUDI_TIMEZONE))
+        self.scheduler.add_job(self.send_daily_report, 'cron', hour=16, minute=0, timezone=SAUDI_TIMEZONE)
+        self.scheduler.add_job(self.send_weekly_report, 'cron', day_of_week='thu', hour=16, minute=0, timezone=SAUDI_TIMEZONE)
+        self.scheduler.add_job(self.reset_daily_queries, 'cron', hour=0, timezone=SAUDI_TIMEZONE)
         self.scheduler.add_job(self.check_penalties, 'interval', minutes=30)
 
-        if WEBHOOK_URL and os.getenv('PORT'):
-            await self.app.updater.start_webhook(
-                listen="0.0.0.0",
-                port=int(os.getenv('PORT')),
-                url_path="",
-                webhook_url=WEBHOOK_URL
-            )
+        # Webhook or Polling
+        if WEBHOOK_URL:
+            await self.setup_webhook()
         else:
             await self.app.updater.start_polling()
 
         logging.info("Bot is running...")
         await asyncio.Event().wait()
+
+    async def setup_webhook(self):
+        """Set up and test the webhook."""
+        try:
+            await self.app.bot.set_webhook(WEBHOOK_URL)
+            webhook_info = await self.app.bot.get_webhook_info()
+            logging.info(f"Webhook Info: {webhook_info}")
+            if webhook_info.url != WEBHOOK_URL:
+                logging.error("Failed to set webhook!")
+            else:
+                logging.info("Webhook set successfully.")
+        except Exception as e:
+            logging.error(f"Webhook Error: {str(e)}", exc_info=True)
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = str(update.effective_chat.id)
@@ -148,12 +143,12 @@ class SaudiStockBot:
         )
 
     async def settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        chat_id = str(update.effective_chat.id)
+        if chat_id not in ACTIVATED_GROUPS:
+            return
+
         session = Session()
         try:
-            chat_id = str(update.effective_chat.id)
-            if chat_id not in ACTIVATED_GROUPS:
-                return
-
             group = session.query(Group).filter_by(chat_id=chat_id).first()
             if not group:
                 group = Group(chat_id=chat_id)
@@ -196,26 +191,20 @@ class SaudiStockBot:
             await self.start(update, context)
 
     async def edit_settings(self, update: Update):
-        session = Session()
-        try:
-            chat_id = str(update.callback_query.message.chat.id)
-            if chat_id not in ACTIVATED_GROUPS:
-                return
+        chat_id = str(update.callback_query.message.chat.id)
+        if chat_id not in ACTIVATED_GROUPS:
+            return
 
-            keyboard = [
-                [InlineKeyboardButton("تعديل عدد الاستفسارات", callback_data='edit_queries')],
-                [InlineKeyboardButton("تعديل نوع العقوبة", callback_data='edit_penalty')],
-                [InlineKeyboardButton("تفعيل/تعطيل الاستراتيجيات", callback_data='toggle_strategies')],
-                [InlineKeyboardButton("رجوع ↩️", callback_data='settings')]
-            ]
-            await update.callback_query.message.edit_text(
-                "🛠 اختر الإعداد الذي تريد تعديله:",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        except Exception as e:
-            logging.error(f"Edit Settings Error: {str(e)}", exc_info=True)
-        finally:
-            session.close()
+        keyboard = [
+            [InlineKeyboardButton("تعديل عدد الاستفسارات", callback_data='edit_queries')],
+            [InlineKeyboardButton("تعديل نوع العقوبة", callback_data='edit_penalty')],
+            [InlineKeyboardButton("تفعيل/تعطيل الاستراتيجيات", callback_data='toggle_strategies')],
+            [InlineKeyboardButton("رجوع ↩️", callback_data='settings')]
+        ]
+        await update.callback_query.message.edit_text(
+            "🛠 اختر الإعداد الذي تريد تعديله:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = str(update.effective_chat.id)
@@ -271,8 +260,8 @@ class SaudiStockBot:
                 await update.message.chat.ban_member(user_id=user_id)
 
             await update.message.reply_text(
-                f"{update.message.from_user.mention_markdown()} {random.choice(self.sarcastic_messages)}",
-                parse_mode=ParseMode.MARKDOWN
+                f"{update.message.from_user.mention_markdown()} لا تزعجنا برقمك مرة أخرى!",
+                parse_mode='Markdown'
             )
         except Exception as e:
             logging.error(f"Spam Handling Error: {str(e)}", exc_info=True)
@@ -290,11 +279,11 @@ class SaudiStockBot:
                 session.commit()
 
             if user.daily_queries >= group.settings['security']['max_queries']:
-                await update.message.reply_text(random.choice(self.sarcastic_messages))
+                await update.message.reply_text("⚠️ لقد تجاوزت الحد الأقصى للاستفسارات اليومية!")
                 return
 
             analysis = await self.analyze_stock(stock_code)
-            sent_message = await update.message.reply_text(analysis, parse_mode=ParseMode.MARKDOWN)
+            sent_message = await update.message.reply_text(analysis, parse_mode='Markdown')
             user.daily_queries += 1
             user.last_query = datetime.now(SAUDI_TIMEZONE)
             session.commit()
@@ -437,7 +426,7 @@ class SaudiStockBot:
                 await self.app.bot.send_message(
                     chat_id=group.chat_id,
                     text=text,
-                    parse_mode=ParseMode.HTML
+                    parse_mode='HTML'
                 )
         except Exception as e:
             logging.error(f"Alert Error: {str(e)}", exc_info=True)
@@ -497,7 +486,7 @@ class SaudiStockBot:
                     await self.app.bot.send_message(
                         chat_id=group.chat_id,
                         text=report_text,
-                        parse_mode=ParseMode.MARKDOWN
+                        parse_mode='Markdown'
                     )
         except Exception as e:
             logging.error(f"Daily Report Error: {str(e)}", exc_info=True)
@@ -520,7 +509,7 @@ class SaudiStockBot:
                     await self.app.bot.send_message(
                         chat_id=group.chat_id,
                         text=report_text,
-                        parse_mode=ParseMode.MARKDOWN
+                        parse_mode='Markdown'
                     )
         except Exception as e:
             logging.error(f"Weekly Report Error: {str(e)}", exc_info=True)
