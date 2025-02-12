@@ -1,7 +1,9 @@
 import os
 import logging
 import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+import re
+import yfinance as yf
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from datetime import datetime, timedelta
 import pytz
@@ -167,10 +169,12 @@ class SaudiStockBot:
                 f"- بركانية: {'✅' if group.settings['strategies']['volcano'] else '❌'}\n"
                 f"- برقية: {'✅' if group.settings['strategies']['lightning'] else '❌'}"
             )
+
             buttons = [
                 [InlineKeyboardButton("تعديل الإعدادات", callback_data='edit_settings')],
                 [InlineKeyboardButton("رجوع ↩️", callback_data='main_menu')]
             ]
+
             await update.message.reply_text(
                 settings_text,
                 reply_markup=InlineKeyboardMarkup(buttons)
@@ -183,6 +187,7 @@ class SaudiStockBot:
     async def handle_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
+
         if query.data == 'settings':
             await self.settings(update, context)
         elif query.data == 'edit_settings':
@@ -202,6 +207,7 @@ class SaudiStockBot:
             [InlineKeyboardButton("تفعيل/تعطيل الاستراتيجيات", callback_data='toggle_strategies')],
             [InlineKeyboardButton("رجوع ↩️", callback_data='settings')]
         ]
+
         await update.callback_query.message.edit_text(
             "🛠 اختر الإعداد الذي تريد تعديله:",
             reply_markup=InlineKeyboardMarkup(keyboard)
@@ -237,6 +243,7 @@ class SaudiStockBot:
             chat_id = str(update.message.chat.id)
             group = session.query(Group).filter_by(chat_id=chat_id).first()
             user = session.query(User).filter_by(user_id=user_id, group_id=group.id).first()
+
             if not user:
                 user = User(user_id=user_id, group_id=group.id)
                 session.add(user)
@@ -274,6 +281,7 @@ class SaudiStockBot:
         try:
             group = session.query(Group).filter_by(chat_id=str(update.message.chat.id)).first()
             user = session.query(User).filter_by(user_id=user_id, group_id=group.id).first()
+
             if not user:
                 user = User(user_id=user_id, group_id=group.id)
                 session.add(user)
@@ -285,6 +293,7 @@ class SaudiStockBot:
 
             analysis = await self.analyze_stock(stock_code)
             sent_message = await update.message.reply_text(analysis, parse_mode='Markdown')
+
             user.daily_queries += 1
             user.last_query = datetime.now(SAUDI_TIMEZONE)
             session.commit()
@@ -375,6 +384,7 @@ class SaudiStockBot:
             entry_price = data['Close'].iloc[-1]
             stop_loss = self.calculate_stop_loss(strategy, data)
             targets = self.calculate_targets(strategy, entry_price)
+
             opp = Opportunity(
                 symbol=symbol,
                 strategy=strategy,
@@ -384,6 +394,7 @@ class SaudiStockBot:
             )
             session.add(opp)
             session.commit()
+
             await self.send_alert_to_groups(opp)
         except Exception as e:
             logging.error(f"Create Opportunity Error: {str(e)}", exc_info=True)
@@ -484,6 +495,7 @@ class SaudiStockBot:
                         f"📈 عدد الفرص اليوم: {len(group.opportunities)}\n"
                         f"👥 عدد المستخدمين النشطين: {session.query(User).filter_by(group_id=group.id).count()}"
                     )
+
                     await self.app.bot.send_message(
                         chat_id=group.chat_id,
                         text=report_text,
@@ -507,6 +519,7 @@ class SaudiStockBot:
                         f"📈 عدد الفرص الأسبوعية: {len(group.opportunities)}\n"
                         f"👥 عدد المستخدمين النشطين: {session.query(User).filter_by(group_id=group.id).count()}"
                     )
+
                     await self.app.bot.send_message(
                         chat_id=group.chat_id,
                         text=report_text,
