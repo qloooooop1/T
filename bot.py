@@ -2,7 +2,6 @@ import os
 import logging
 import asyncio
 import re
-import yfinance as yf
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from datetime import datetime, timedelta
@@ -10,6 +9,8 @@ import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import create_engine, Column, Integer, String, JSON, DateTime, Boolean, Float, ForeignKey
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+from fastapi import FastAPI, Request
+from starlette.responses import Response
 
 # Configuration
 TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -79,6 +80,10 @@ class Opportunity(Base):
 
 Base.metadata.create_all(engine)
 
+# Create FastAPI app for webhook handling
+app = FastAPI()
+
+# Saudi Stock Bot Class
 class SaudiStockBot:
     def __init__(self):
         self.app = Application.builder().token(TOKEN).build()
@@ -103,11 +108,8 @@ class SaudiStockBot:
         self.scheduler.add_job(self.reset_daily_queries, 'cron', hour=0, timezone=SAUDI_TIMEZONE)
         self.scheduler.add_job(self.check_penalties, 'interval', minutes=30)
 
-        # Webhook or Polling
-        if WEBHOOK_URL:
-            await self.setup_webhook()
-        else:
-            await self.app.updater.start_polling()
+        # Set up webhook
+        await self.setup_webhook()
 
         logging.info("Bot is running...")
         await asyncio.Event().wait()
@@ -308,6 +310,7 @@ class SaudiStockBot:
 
     async def analyze_stock(self, stock_code):
         try:
+            import yfinance as yf
             stock = yf.Ticker(f"{stock_code}.SR")
             hist = stock.history(period="1mo")
             if hist.empty:
@@ -342,6 +345,7 @@ class SaudiStockBot:
     async def check_opportunities(self):
         session = Session()
         try:
+            import yfinance as yf
             for symbol in STOCK_SYMBOLS:
                 data = yf.download(symbol, period='3d', interval='1h')
                 if data.empty or len(data) < 200:
@@ -530,10 +534,28 @@ class SaudiStockBot:
         finally:
             session.close()
 
+# Webhook handler for FastAPI
+@app.post("/")
+async def webhook_handler(request: Request):
+    data = await request.json()
+    update = Update.de_json(data, bot.app.bot)
+    await bot.app.process_update(update)
+    return Response(status_code=200)
+
+# Initialize bot
+bot = SaudiStockBot()
+
+# Run the bot and FastAPI app
 if __name__ == '__main__':
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.INFO
     )
-    bot = SaudiStockBot()
-    asyncio.run(bot.run())
+
+    # Start the bot in a separate thread
+    import threading
+    threading.Thread(target=asyncio.run, args=(bot.run(),)).start()
+
+    # Start FastAPI app
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
