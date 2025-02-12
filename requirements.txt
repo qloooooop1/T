@@ -12,5 +12,7 @@ arabic-reshaper>=3.0.0
 psycopg2-binary>=2.9.6
 pandas-ta
 PyAlgoTrade
+uvicorn
+fastapi
 python-telegram-bot[webhooks]==20.3
 python-dotenv  # إذا كنت تستخدم ملف .env للمتغيرات البيئية
