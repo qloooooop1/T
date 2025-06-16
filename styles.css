@@ -1,0 +1,101 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    font-family: 'Cairo', sans-serif;
+}
+
+body {
+    background: linear-gradient(135deg, #e0f2fe, #bae6fd);
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.container {
+    max-width: 600px;
+    padding: 20px;
+    text-align: center;
+}
+
+h1 {
+    font-size: 2.5rem;
+    color: #1e3a8a;
+    margin-bottom: 20px;
+}
+
+.breathing-container {
+    position: relative;
+    height: 300px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.circle {
+    width: 150px;
+    height: 150px;
+    background: radial-gradient(circle, #3b82f6 0%, #93c5fd 70%, transparent 100%);
+    border-radius: 50%;
+    position: absolute;
+    transition: transform 4s ease-in-out;
+}
+
+.inhale { transform: scale(1.5); }
+.hold { transform: scale(1.3); }
+.exhale { transform: scale(1); }
+
+.instructions {
+    position: relative;
+    color: #1e3a8a;
+    z-index: 1;
+}
+
+#breathText {
+    display: block;
+    font-size: 2rem;
+    margin-bottom: 10px;
+}
+
+#timerDisplay {
+    font-size: 1.5rem;
+}
+
+.controls {
+    margin-top: 20px;
+}
+
+#cycleCounter {
+    font-size: 1.2rem;
+    color: #1e3a8a;
+    margin-bottom: 10px;
+}
+
+#startBtn {
+    padding: 10px 30px;
+    border: none;
+    border-radius: 25px;
+    background: #3b82f6;
+    color: white;
+    font-size: 1.1rem;
+    cursor: pointer;
+    transition: transform 0.3s ease;
+}
+
+#startBtn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+}
+
+#startBtn:disabled {
+    background: #93c5fd;
+    cursor: not-allowed;
+}
+
+@media (max-width: 480px) {
+    h1 { font-size: 2rem; }
+    .circle { width: 120px; height: 120px; }
+    #breathText { font-size: 1.5rem; }
+    #timerDisplay { font-size: 1.2rem; }
+}
