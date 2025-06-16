@@ -48,6 +48,7 @@ const motivationMessages = [
 // تحميل بيانات المستخدم
 function loadUserData() {
     const savedData = JSON.parse(localStorage.getItem("breathingAppData")) || {};
+    console.log("Loading user data:", savedData); // تصحيح أخطاء
     if (savedData.userName) {
         userName = savedData.userName;
         notificationTimes = savedData.notificationTimes || [];
@@ -65,6 +66,9 @@ function loadUserData() {
         scheduleNotifications();
         applySettings();
         displayRandomVerse();
+    } else {
+        document.getElementById("loginContainer").style.display = "block";
+        document.getElementById("mainContainer").style.display = "none";
     }
 }
 
@@ -83,8 +87,13 @@ function saveUser() {
         .map(input => input.value)
         .filter(time => time);
     
-    if (!userName || notificationTimes.length < 3) {
-        alert("يرجى إدخال اسمك وتحديد 3 مواعيد تنبيه على الأقل!");
+    console.log("Saving user:", userName, notificationTimes); // تصحيح أخطاء
+    if (!userName) {
+        alert("يرجى إدخال اسمك!");
+        return;
+    }
+    if (notificationTimes.length < 3) {
+        alert("يرجى إدخال 3 مواعيد تنبيه على الأقل!");
         return;
     }
 
@@ -101,6 +110,7 @@ function saveUser() {
         }
     };
     localStorage.setItem("breathingAppData", JSON.stringify(data));
+    console.log("Data saved to localStorage:", data); // تصحيح أخطاء
     loadUserData();
 }
 
@@ -307,6 +317,7 @@ function scheduleNotifications() {
             notificationTime.setDate(now.getDate() + 1);
         }
         const timeToNotification = notificationTime - now;
+        console.log(`Scheduling notification for ${time} in ${timeToNotification}ms`); // تصحيح أخطاء
         setTimeout(() => {
             if (Notification.permission === "granted") {
                 new Notification(`حان وقت تمرين التنفس يا ${userName}! 🧘`, {
@@ -331,6 +342,9 @@ function applySettings() {
 document.getElementById("startBtn").addEventListener("click", startBreathing);
 document.getElementById("pauseBtn").addEventListener("click", pauseBreathing);
 document.getElementById("resumeBtn").addEventListener("click", resumeBreathing);
+
+// ربط زر "حفظ والبدء"
+document.querySelector(".login-container button[onclick='saveUser()']").addEventListener("click", saveUser);
 
 // تحميل البيانات
 loadUserData();
