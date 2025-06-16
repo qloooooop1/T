@@ -17,8 +17,8 @@
             <input type="time" class="notification-time">
             <input type="time" class="notification-time">
         </div>
-        <button onclick="addNotificationTime()">إضافة موعد آخر</button>
-        <button onclick="saveUser()">حفظ والبدء</button>
+        <button id="saveUserBtn">حفظ والبدء</button>
+        <button id="addTimeBtn">إضافة موعد آخر</button>
     </div>
 
     <div class="main-container" id="mainContainer" style="display: none;">
@@ -56,7 +56,7 @@
             <h4>مواعيد التنبيهات</h4>
             <div id="notificationList"></div>
             <input type="time" id="newNotificationTime">
-            <button onclick="addNewNotification()">إضافة تنبيه</button>
+            <button id="addNotificationBtn">إضافة تنبيه</button>
         </div>
     </div>
 
