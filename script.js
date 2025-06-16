@@ -1,8 +1,3 @@
-// طلب إذن الإشعارات
-if (Notification.permission !== "granted") {
-    Notification.requestPermission();
-}
-
 // قائمة الآيات القرآنية مع روابط التلاوة
 const quranVerses = [
     {
@@ -33,8 +28,7 @@ let monthlySessions = 0;
 let totalReps = 0;
 let points = 0;
 let badges = [];
-let userName = "";
-let notificationTimes = [];
+let userName = "مستخدم"; // اسم افتراضي
 const maxSessionsPerDay = 3;
 const maxRepsPerSession = 15;
 const motivationMessages = [
@@ -50,29 +44,19 @@ function loadUserData() {
     console.log("Starting loadUserData...");
     const savedData = JSON.parse(localStorage.getItem("breathingAppData")) || {};
     console.log("Loaded data:", savedData);
-    if (savedData.userName) {
-        userName = savedData.userName;
-        notificationTimes = savedData.notificationTimes || [];
-        sessionsToday = savedData.stats?.today?.sessions || 0;
-        weeklySessions = savedData.stats?.week?.sessions || 0;
-        monthlySessions = savedData.stats?.month?.sessions || 0;
-        totalReps = savedData.stats?.totalReps || 0;
-        points = savedData.stats?.points || 0;
-        badges = savedData.stats?.badges || [];
-        console.log("User data found:", userName, notificationTimes);
-        document.getElementById("loginContainer").style.display = "none";
-        document.getElementById("mainContainer").style.display = "block";
-        document.getElementById("userGreeting").textContent = userName;
-        updateStatsDisplay();
-        updateNotificationList();
-        scheduleNotifications();
-        applySettings();
-        displayRandomVerse();
-    } else {
-        console.log("No user data, showing login...");
-        document.getElementById("loginContainer").style.display = "block";
-        document.getElementById("mainContainer").style.display = "none";
-    }
+    userName = savedData.userName || userName; // استخدام الاسم الافتراضي إذا لم يكن موجودًا
+    sessionsToday = savedData.stats?.today?.sessions || 0;
+    weeklySessions = savedData.stats?.week?.sessions || 0;
+    monthlySessions = savedData.stats?.month?.sessions || 0;
+    totalReps = savedData.stats?.totalReps || 0;
+    points = savedData.stats?.points || 0;
+    badges = savedData.stats?.badges || [];
+    console.log("User data:", userName, sessionsToday, weeklySessions, monthlySessions);
+    document.getElementById("mainContainer").style.display = "block";
+    document.getElementById("userGreeting").textContent = userName;
+    updateStatsDisplay();
+    applySettings();
+    displayRandomVerse();
 }
 
 // عرض آية عشوائية
@@ -84,97 +68,11 @@ function displayRandomVerse() {
     document.getElementById("verseAudio").src = verse.audio;
 }
 
-// حفظ بيانات المستخدم
-function saveUser() {
-    console.log("Starting saveUser...");
-    userName = document.getElementById("userName").value.trim();
-    notificationTimes = Array.from(document.querySelectorAll(".notification-time"))
-        .map(input => input.value)
-        .filter(time => time !== "");
-    
-    console.log("Input data:", userName, notificationTimes);
-    if (!userName) {
-        alert("يرجى إدخال اسمك!");
-        console.log("Error: No username provided");
-        return;
-    }
-    if (notificationTimes.length < 3) {
-        alert("يرجى إدخال 3 مواعيد تنبيه على الأقل!");
-        console.log("Error: Less than 3 notification times");
-        return;
-    }
-
-    const data = {
-        userName,
-        notificationTimes,
-        stats: {
-            today: { sessions: 0, date: new Date().toDateString() },
-            week: { sessions: 0, weekNumber: getWeekNumber() },
-            month: { sessions: 0, month: new Date().getMonth() },
-            totalReps: 0,
-            points: 0,
-            badges: []
-        }
-    };
-    console.log("Saving data to localStorage:", data);
-    localStorage.setItem("breathingAppData", JSON.stringify(data));
-    loadUserData();
-}
-
-// إضافة موعد تنبيه
-function addNotificationTime() {
-    console.log("Adding new notification time input...");
-    const input = document.createElement("input");
-    input.type = "time";
-    input.className = "notification-time";
-    document.getElementById("notificationTimes").appendChild(input);
-}
-
-// تحديث قائمة التنبيهات
-function updateNotificationList() {
-    console.log("Updating notification list...");
-    const list = document.getElementById("notificationList");
-    list.innerHTML = "";
-    notificationTimes.forEach((time, index) => {
-        const div = document.createElement("div");
-        div.className = "notification-list-item";
-        div.innerHTML = `
-            <span>${time}</span>
-            <button onclick="removeNotification(${index})">حذف</button>
-        `;
-        list.appendChild(div);
-    });
-}
-
-// إضافة تنبيه جديد
-function addNewNotification() {
-    console.log("Adding new notification...");
-    const newTime = document.getElementById("newNotificationTime").value;
-    if (newTime && !notificationTimes.includes(newTime)) {
-        notificationTimes.push(newTime);
-        saveUserData();
-        updateNotificationList();
-        scheduleNotifications();
-    } else {
-        console.log("Invalid or duplicate notification time:", newTime);
-    }
-}
-
-// حذف تنبيه
-function removeNotification(index) {
-    console.log("Removing notification at index:", index);
-    notificationTimes.splice(index, 1);
-    saveUserData();
-    updateNotificationList();
-    scheduleNotifications();
-}
-
 // حفظ بيانات الإحصائيات
 function saveUserData() {
     console.log("Saving user data...");
     const data = {
         userName,
-        notificationTimes,
         stats: {
             today: { sessions: sessionsToday, date: new Date().toDateString() },
             week: { sessions: weeklySessions, weekNumber: getWeekNumber() },
@@ -331,29 +229,6 @@ function checkBadges() {
     saveUserData();
 }
 
-// إعداد التنبيهات
-function scheduleNotifications() {
-    console.log("Scheduling notifications:", notificationTimes);
-    notificationTimes.forEach(time => {
-        const [hour, minute] = time.split(":").map(Number);
-        const now = new Date();
-        let notificationTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute);
-        if (notificationTime < now) {
-            notificationTime.setDate(now.getDate() + 1);
-        }
-        const timeToNotification = notificationTime - now;
-        console.log(`Scheduling notification for ${time} in ${timeToNotification}ms`);
-        setTimeout(() => {
-            if (Notification.permission === "granted") {
-                new Notification(`حان وقت تمرين التنفس يا ${userName}! 🧘`, {
-                    body: "ابدأ جلسة التنفس الآن لتقليل التوتر!"
-                });
-            }
-            scheduleNotifications();
-        }, timeToNotification);
-    });
-}
-
 // تطبيق إعدادات التخصيص
 function applySettings() {
     console.log("Applying settings...");
@@ -365,18 +240,6 @@ function applySettings() {
 }
 
 // ربط الأزرار
-document.getElementById("saveUserBtn").addEventListener("click", () => {
-    console.log("Save button clicked");
-    saveUser();
-});
-document.getElementById("addTimeBtn").addEventListener("click", () => {
-    console.log("Add time button clicked");
-    addNotificationTime();
-});
-document.getElementById("addNotificationBtn").addEventListener("click", () => {
-    console.log("Add notification button clicked");
-    addNewNotification();
-});
 document.getElementById("startBtn").addEventListener("click", startBreathing);
 document.getElementById("pauseBtn").addEventListener("click", pauseBreathing);
 document.getElementById("resumeBtn").addEventListener("click", resumeBreathing);
