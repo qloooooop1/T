@@ -2,100 +2,179 @@
     margin: 0;
     padding: 0;
     box-sizing: border-box;
-    font-family: 'Cairo', sans-serif;
+    font-family: 'Tajawal', sans-serif;
 }
 
 body {
-    background: linear-gradient(135deg, #e0f2fe, #bae6fd);
+    background: linear-gradient(135deg, #dbeafe, #93c5fd);
     min-height: 100vh;
     display: flex;
     justify-content: center;
     align-items: center;
+    overflow-x: hidden;
 }
 
 .container {
-    max-width: 600px;
+    max-width: 800px;
     padding: 20px;
     text-align: center;
+    background: rgba(255, 255, 255, 0.95);
+    border-radius: 20px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+    margin: 20px;
 }
 
 h1 {
-    font-size: 2.5rem;
-    color: #1e3a8a;
+    font-size: 2.8rem;
+    color: #1e40af;
     margin-bottom: 20px;
 }
 
 .breathing-container {
     position: relative;
-    height: 300px;
+    height: 350px;
     display: flex;
     justify-content: center;
     align-items: center;
 }
 
 .circle {
-    width: 150px;
-    height: 150px;
-    background: radial-gradient(circle, #3b82f6 0%, #93c5fd 70%, transparent 100%);
+    width: 180px;
+    height: 180px;
+    background: radial-gradient(circle, #2563eb 0%, #93c5fd 70%, transparent 100%);
     border-radius: 50%;
     position: absolute;
-    transition: transform 4s ease-in-out;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    transition: transform 4s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.inhale { transform: scale(1.5); }
-.hold { transform: scale(1.3); }
+.glow {
+    width: 100%;
+    height: 100%;
+    background: radial-gradient(circle, rgba(59, 130, 246, 0.3) 0%, transparent 70%);
+    border-radius: 50%;
+    position: absolute;
+    animation: glowPulse 4s infinite ease-in-out;
+}
+
+@keyframes glowPulse {
+    0%, 100% { transform: scale(1); opacity: 0.3; }
+    50% { transform: scale(1.2); opacity: 0.5; }
+}
+
+.inhale { transform: scale(1.6); }
+.hold { transform: scale(1.4); }
 .exhale { transform: scale(1); }
 
 .instructions {
     position: relative;
-    color: #1e3a8a;
+    color: #1e40af;
     z-index: 1;
 }
 
 #breathText {
     display: block;
-    font-size: 2rem;
-    margin-bottom: 10px;
+    font-size: 2.2rem;
+    margin-bottom: 15px;
+    font-weight: 700;
 }
 
 #timerDisplay {
-    font-size: 1.5rem;
+    font-size: 1.8rem;
 }
 
 .controls {
-    margin-top: 20px;
+    margin: 20px 0;
 }
 
 #cycleCounter {
-    font-size: 1.2rem;
-    color: #1e3a8a;
-    margin-bottom: 10px;
+    font-size: 1.3rem;
+    color: #1e40af;
+    margin-bottom: 15px;
 }
 
 #startBtn {
-    padding: 10px 30px;
+    padding: 12px 40px;
     border: none;
-    border-radius: 25px;
-    background: #3b82f6;
+    border-radius: 30px;
+    background: #2563eb;
     color: white;
-    font-size: 1.1rem;
+    font-size: 1.2rem;
+    font-weight: 700;
     cursor: pointer;
-    transition: transform 0.3s ease;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 15px rgba(37, 99, 235, 0.3);
 }
 
 #startBtn:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+    transform: translateY(-3px);
+    box-shadow: 0 6px 20px rgba(37, 99, 235, 0.5);
 }
 
 #startBtn:disabled {
     background: #93c5fd;
     cursor: not-allowed;
+    box-shadow: none;
 }
 
-@media (max-width: 480px) {
-    h1 { font-size: 2rem; }
-    .circle { width: 120px; height: 120px; }
-    #breathText { font-size: 1.5rem; }
-    #timerDisplay { font-size: 1.2rem; }
+.stats-container {
+    margin-top: 30px;
+    padding: 20px;
+    background: rgba(255, 255, 255, 0.8);
+    border-radius: 15px;
+}
+
+h2 {
+    font-size: 2rem;
+    color: #1e40af;
+    margin-bottom: 20px;
+}
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 20px;
+    margin-bottom: 20px;
+}
+
+.stat {
+    background: #eff6ff;
+    padding: 15px;
+    border-radius: 10px;
+    text-align: center;
+}
+
+.stat span:first-child {
+    display: block;
+    font-size: 1rem;
+    color: #1e40af;
+    margin-bottom: 5px;
+}
+
+.stat span:last-child {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #2563eb;
+}
+
+#motivationText {
+    font-size: 1.2rem;
+    color: #1e40af;
+    margin: 20px 0;
+    font-style: italic;
+}
+
+.chart-container {
+    max-width: 100%;
+    margin: 20px auto;
+}
+
+@media (max-width: 600px) {
+    h1 { font-size: 2.2rem; }
+    .circle { width: 140px; height: 140px; }
+    #breathText { font-size: 1.8rem; }
+    #timerDisplay { font-size: 1.5rem; }
+    h2 { font-size: 1.8rem; }
 }
