@@ -3,15 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>تمرين التنفس 4-4-6</title>
+    <title>تمرين التنفس 4-4-6 الاحترافي</title>
     <link rel="stylesheet" href="styles.css">
-    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
     <div class="container">
         <h1>تمرين التنفس 4-4-6</h1>
         <div class="breathing-container">
-            <div class="circle"></div>
+            <div class="circle">
+                <div class="glow"></div>
+            </div>
             <div class="instructions">
                 <span id="breathText">اضغط "ابدأ" لبدء التمرين</span>
                 <span id="timerDisplay">0</span>
@@ -20,6 +23,31 @@
         <div class="controls">
             <p id="cycleCounter">الدورة: 0/15</p>
             <button id="startBtn">ابدأ</button>
+        </div>
+        <div class="stats-container">
+            <h2>إحصائياتك</h2>
+            <div class="stats-grid">
+                <div class="stat">
+                    <span>الزيارات</span>
+                    <span id="visitCount">0</span>
+                </div>
+                <div class="stat">
+                    <span>التمارين اليومية</span>
+                    <span id="dailyCount">0</span>
+                </div>
+                <div class="stat">
+                    <span>التمارين الأسبوعية</span>
+                    <span id="weeklyCount">0</span>
+                </div>
+                <div class="stat">
+                    <span>التمارين الشهرية</span>
+                    <span id="monthlyCount">0</span>
+                </div>
+            </div>
+            <p id="motivationText">واصل الاستمرار! أنت على الطريق الصحيح!</p>
+            <div class="chart-container">
+                <canvas id="progressChart"></canvas>
+            </div>
         </div>
     </div>
     <script src="script.js"></script>
