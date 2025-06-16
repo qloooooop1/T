@@ -8,20 +8,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Amiri&display=swap" rel="stylesheet">
 </head>
 <body>
-    <div class="login-container" id="loginContainer">
-        <h2>مرحبًا! من أنت؟</h2>
-        <input type="text" id="userName" placeholder="أدخل اسمك">
-        <h3>حدد مواعيد التنبيهات (3 على الأقل)</h3>
-        <div id="notificationTimes">
-            <input type="time" class="notification-time">
-            <input type="time" class="notification-time">
-            <input type="time" class="notification-time">
-        </div>
-        <button id="saveUserBtn">حفظ والبدء</button>
-        <button id="addTimeBtn">إضافة موعد آخر</button>
-    </div>
-
-    <div class="main-container" id="mainContainer" style="display: none;">
+    <div class="main-container" id="mainContainer">
         <h1>تطبيق التنفس 4-4-6، <span id="userGreeting"></span></h1>
         <div class="quran-verse">
             <h3>آية اليوم</h3>
@@ -53,10 +40,6 @@
             <h3>الإعدادات</h3>
             <label>لون الخلفية: <input type="color" id="bgColor" value="#74ebd5"></label>
             <label><input type="checkbox" id="soundToggle" checked> تشغيل الأصوات</label>
-            <h4>مواعيد التنبيهات</h4>
-            <div id="notificationList"></div>
-            <input type="time" id="newNotificationTime">
-            <button id="addNotificationBtn">إضافة تنبيه</button>
         </div>
     </div>
 
