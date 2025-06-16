@@ -1,55 +1,67 @@
 <!DOCTYPE html>
-<html lang="ar">
+<html lang="ar" dir="rtl">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>تمرين التنفس 4-4-6 الاحترافي</title>
+    <title>تطبيق التنفس 4-4-6</title>
     <link rel="stylesheet" href="styles.css">
-    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700&display=swap" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Amiri&display=swap" rel="stylesheet">
 </head>
 <body>
-    <div class="container">
-        <h1>تمرين التنفس 4-4-6</h1>
-        <div class="breathing-container">
-            <div class="circle">
-                <div class="glow"></div>
-            </div>
-            <div class="instructions">
-                <span id="breathText">اضغط "ابدأ" لبدء التمرين</span>
-                <span id="timerDisplay">0</span>
-            </div>
+    <div class="login-container" id="loginContainer">
+        <h2>مرحبًا! من أنت؟</h2>
+        <input type="text" id="userName" placeholder="أدخل اسمك">
+        <h3>حدد مواعيد التنبيهات (3 على الأقل)</h3>
+        <div id="notificationTimes">
+            <input type="time" class="notification-time">
+            <input type="time" class="notification-time">
+            <input type="time" class="notification-time">
+        </div>
+        <button onclick="addNotificationTime()">إضافة موعد آخر</button>
+        <button onclick="saveUser()">حفظ والبدء</button>
+    </div>
+
+    <div class="main-container" id="mainContainer" style="display: none;">
+        <h1>تطبيق التنفس 4-4-6، <span id="userGreeting"></span></h1>
+        <div class="quran-verse">
+            <h3>آية اليوم</h3>
+            <p id="verseText"></p>
+            <audio id="verseAudio" controls></audio>
+        </div>
+        <div class="breathing-circle" id="breathingCircle">
+            <div class="circle-text" id="circleText">ابدأ التمرين</div>
         </div>
         <div class="controls">
-            <p id="cycleCounter">الدورة: 0/15</p>
-            <button id="startBtn">ابدأ</button>
+            <button id="startBtn">بدء</button>
+            <button id="pauseBtn" disabled>إيقاف</button>
+            <button id="resumeBtn" disabled>استئناف</button>
         </div>
-        <div class="stats-container">
-            <h2>إحصائياتك</h2>
-            <div class="stats-grid">
-                <div class="stat">
-                    <span>الزيارات</span>
-                    <span id="visitCount">0</span>
-                </div>
-                <div class="stat">
-                    <span>التمارين اليومية</span>
-                    <span id="dailyCount">0</span>
-                </div>
-                <div class="stat">
-                    <span>التمارين الأسبوعية</span>
-                    <span id="weeklyCount">0</span>
-                </div>
-                <div class="stat">
-                    <span>التمارين الشهرية</span>
-                    <span id="monthlyCount">0</span>
-                </div>
-            </div>
-            <p id="motivationText">واصل الاستمرار! أنت على الطريق الصحيح!</p>
-            <div class="chart-container">
-                <canvas id="progressChart"></canvas>
-            </div>
+        <div class="stats">
+            <h2>الإحصائيات</h2>
+            <p>اليوم: <span id="dailyCount">0</span> جلسة</p>
+            <p>هذا الأسبوع: <span id="weeklyCount">0</span> جلسة</p>
+            <p>هذا الشهر: <span id="monthlyCount">0</span> جلسة</p>
+            <p>النقاط: <span id="points">0</span></p>
+            <p>إجمالي التكرارات: <span id="totalReps">0</span></p>
+            <h3>الشارات: <span id="badges"></span></h3>
+        </div>
+        <div class="motivation" id="motivation">
+            <p id="motivationText">هيا! ابدأ رحلتك نحو الهدوء! 🥰</p>
+            <img id="motivationImage" src="https://cdn.pixabay.com/photo/2016/08/08/09/17/avatar-1577909_1280.png" alt="وجه سعيد">
+        </div>
+        <div class="settings">
+            <h3>الإعدادات</h3>
+            <label>لون الخلفية: <input type="color" id="bgColor" value="#74ebd5"></label>
+            <label><input type="checkbox" id="soundToggle" checked> تشغيل الأصوات</label>
+            <h4>مواعيد التنبيهات</h4>
+            <div id="notificationList"></div>
+            <input type="time" id="newNotificationTime">
+            <button onclick="addNewNotification()">إضافة تنبيه</button>
         </div>
     </div>
+
+    <audio id="inhaleSound" src="https://cdn.pixabay.com/audio/2023/03/22/14-36-41-404_200x200.mp3"></audio>
+    <audio id="exhaleSound" src="https://cdn.pixabay.com/audio/2023/03/22/14-36-42-828_200x200.mp3"></audio>
     <script src="script.js"></script>
 </body>
 </html>
